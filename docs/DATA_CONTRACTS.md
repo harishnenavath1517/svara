@@ -50,35 +50,94 @@ events stay ordered.
 
 ## Postgres tables (Supabase)
 
+DDL: `packages/db/src/schema.sql`. Applied idempotently by `pnpm db:migrate` (which
+`pnpm infra:up` runs for you).
+
 ```
-traces        -- one row per hop event (flattened from svara.traces)
+traces        -- one row per hop event (flattened from svara.traces). PK (trace_id, hop)
 turns         -- one row per turn: session_id, turn_index, lang, total_latency_ms, ok
-eval_runs     -- run_id, git_sha, config_hash, started_at, golden_set_version, notes
-eval_scores   -- run_id, lang, hop, metric, value   (long/tidy format — easy to pivot)
+eval_runs     -- run_id, git_sha, config_hash, started_at, golden_set_version,
+                 records_scored, notes
+eval_scores   -- run_id, lang, hop, metric, slice, value, n   (long/tidy — easy to pivot)
+eval_samples  -- per-record detail behind the aggregates: expected, actual, and the
+                 judge's rationale. A number without a rationale can't be argued with.
 ```
 
-`eval_scores` is intentionally tall (one row per metric per language per hop per run) so the
-dashboard can pivot without schema changes when you add a metric.
+`eval_scores` is intentionally tall (one row per metric per language per hop per **slice** per
+run) so the dashboard can pivot without schema changes when you add a metric. `slice` is the
+tag bucket (`clean` / `code-mixed` / `numbers` / `noisy`, or `all`) — it keeps the code-mixed
+cell reportable separately without inventing a column per tag.
 
-## Golden-set record (`evals/golden/<lang>.jsonl`)
+`records_scored` exists so a run that scored **nothing** can never be mistaken for a run that
+scored well. `pnpm eval` exits non-zero when it is zero.
 
-One JSON object per line:
+Both trace writes upsert on the event's natural key, so the sink is **idempotent** and can be
+replayed from offset 0 (`pnpm --filter @svara/sink run backfill`). Postgres holds nothing the
+Redpanda log cannot rebuild — a schema change is not a data-loss event.
+
+## Audio blobs
+
+A trace never carries audio; it carries a **reference** to audio. `input_ref` (caller audio,
+STT hop) and `output_ref` (the agent's voice, TTS hop) are storage keys, written by the hop and
+resolved against `STORAGE_DIR` (default: `.svara-storage/` at the repo root — anchored there
+and *not* at `process.cwd()`, because every package runs from its own directory and a
+cwd-relative root means the worker writes a blob where the dashboard will never look).
+
+Capture is passive and best-effort: chunks are forwarded to the caller first and the WAV is
+assembled only after the hop has finished streaming, so it can never delay first audio. A
+failed write logs and yields a null ref — losing a blob costs a drill-down; failing a live call
+to store one is not a trade worth making. Set `TRACE_AUDIO=false` to disable.
+
+## Golden-set record
+
+Two files per language. `evals/golden/source/<lang>.jsonl` is **hand-authored** — it is the
+answer key, and it is the answer key precisely because no model produced it:
+
+```jsonc
+{
+  "id": "ta-IN-0007",
+  "intent": "check_status",
+  "tags": ["numbers"],              // clean | code-mixed | noisy | numbers
+  "text": "மார்ச் பதினைந்தாம் தேதி விண்ணப்பித்தேன் …",   // as spoken, native script + code-mixing
+  "romanized": "March pathinainthaam thethi vinnappithen …", // hand-romanized; see below
+  "reference_translation": "I applied on the fifteenth of March …"
+}
+```
+
+`evals/golden/<lang>.jsonl` is **generated** by `pnpm golden:build` — the source line plus the
+synthesized audio and the QA verdict:
 
 ```jsonc
 {
   "id": "ta-IN-0007",
   "lang": "ta-IN",
   "audio_ref": "evals/golden/audio/ta-IN-0007.wav",
-  "expected_transcript": "…",      // verbatim ground truth (built via saaras verbatim mode)
+  "expected_transcript": "…",       // the AUTHORED script — ground truth. Not a transcript.
+  "expected_romanized": "…",        // the authored romanization (script-invariant reference)
   "expected_intent": "check_status",
-  "reference_translation": "…",    // English reference, when translation is scored
-  "tags": ["code-mixed", "numbers"],// e.g. clean | code-mixed | noisy | numbers
-  "consent": "synthetic"           // "synthetic" | "consented" — provenance required
+  "reference_translation": "…",
+  "tags": ["numbers"],
+  "consent": "synthetic",           // "synthetic" | "consented" — provenance required
+  "speaker": "aditya",              // bulbul:v3 speaker; rotated so the set isn't one voice
+  "snr_db": null,                   // dB of added noise; null unless tagged `noisy`
+  "qa_transcript": "…",             // what Saaras `translit` heard — the QA gate, NOT the key
+  "qa_cer": 0.04,                   // CER vs `expected_romanized`
+  "usable": true                    // false = quarantined; the eval skips it
 }
 ```
 
-Keep it small and high-signal (~20 per language) to start. When a real failure appears, add
-it here as a permanent regression case — that's how the set earns its keep.
+**`expected_transcript` is the script we fed the synthesizer, not a transcription of the
+audio.** Building it by running Saaras over Bulbul's output would be Saaras-vs-Saaras — a model
+grading its own homework. Saaras runs only as a **QA gate** ("did Bulbul say what we asked?"),
+in `translit` mode rather than the production `codemix` mode, and scored with CER. Full
+reasoning in `EVAL_STRATEGY.md`.
+
+**`expected_romanized` is hand-authored, not generated.** Sarvam's `/transliterate` endpoint is
+not a pure function — on `ta-IN` it is non-deterministic and degenerates into a repetition loop
+on identical input — and a metric that calls it would report API jitter as a regression.
+
+Keep it small and high-signal (~20 per language). When a real failure appears, add it here as a
+permanent regression case — that's how the set earns its keep.
 
 ## Hop activity contract (Temporal)
 

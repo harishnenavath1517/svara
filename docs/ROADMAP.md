@@ -102,21 +102,99 @@ Phase 1 notes — read these before touching a hop:
 
 ## Phase 2 — Traces & the eval harness (the differentiator) (2–3 days)
 
-- [ ] Every hop emits a `svara.traces` event (schema in `DATA_CONTRACTS.md`), including on
+- [x] Every hop emits a `svara.traces` event (schema in `DATA_CONTRACTS.md`), including on
       error. Add the emission in the same change as each Sarvam call.
-- [ ] Trace sink: consume `svara.traces` → Postgres rows + audio blobs to storage.
-- [ ] `evals/golden/`: ~20 utterances/language across clean / code-mixed / noisy / numbers /
-      each intent. Build ground truth with Saaras `verbatim` mode; bootstrap audio with
-      Bulbul where you lack consented recordings.
-- [ ] `packages/eval` runner + CLI (`pnpm eval [--lang] [--hop] [--against]`):
-  - [ ] STT: WER/CER per language, code-mixed reported separately.
-  - [ ] Translation: chrF + COMET + LLM-judge, plus metric↔judge agreement.
-  - [ ] Intent accuracy + confusion matrix.
-  - [ ] TTS: round-trip intelligibility (synthesize → transcribe → WER).
-  - [ ] Latency: per-hop + e2e p50/p95/p99.
-- [ ] Write versioned `eval_runs` + `eval_scores` with `config_hash` and `git_sha`.
+- [x] Trace sink: consume `svara.traces` → Postgres rows + audio blobs to storage.
+- [x] `evals/golden/`: ~20 utterances/language across clean / code-mixed / noisy / numbers /
+      each intent. Bootstrap audio with Bulbul; QA it with Saaras (see notes — the ground
+      truth is the *authored script*, not a Saaras transcript).
+- [x] `packages/eval` runner + CLI (`pnpm eval [--lang] [--hop] [--against]`):
+  - [x] STT: WER/CER per language, code-mixed reported separately.
+  - [x] Translation: chrF + LLM-judge, plus metric↔judge agreement. **COMET: not done — see
+        notes.**
+  - [x] Intent accuracy + confusion matrix.
+  - [x] TTS: round-trip intelligibility (synthesize → transcribe → WER).
+  - [x] Latency: per-hop + e2e p50/p95/p99.
+- [x] Write versioned `eval_runs` + `eval_scores` with `config_hash` and `git_sha`.
 
 Exit: `pnpm eval` produces per-language scores for every hop and persists a run you can diff.
+**Met.** Baseline run `58ab3e4c`, 40/40 golden records scored across hi-IN and ta-IN, every
+hop, persisted and diffable (`pnpm eval --against <run_id>`).
+
+### The headline finding: naive WER inverts the code-mixed result
+
+The number this project exists to produce, and it is the opposite of what a naive harness
+would have reported:
+
+| hi-IN slice | WER (script-sensitive) | WER (script-invariant) |
+|-------------|-----------------------:|-----------------------:|
+| clean       | 0.093                  | 0.073                  |
+| **code-mixed** | **0.234**           | **0.021**              |
+| numbers     | 0.140                  | 0.053                  |
+| noisy       | 0.119                  | 0.143                  |
+
+Saaras hears "Aadhaar card" perfectly and writes it as "आधार कार्ड". Token WER against a
+Latin-script reference scores all four loanwords in that utterance as substitutions — exactly
+0.5 WER on a transcription with **zero recognition errors**. Aggregated, that makes code-mixed
+look like the *worst* slice (0.234, 2.5× clean) when it is in fact the *best* (0.021).
+
+A harness that reported only the first column would have concluded "Sarvam is bad at
+Hinglish" and sent someone off to fix a model that is working. The harness reports both
+columns and the gap between them, because the gap **is** the finding. Concretely: the
+production `codemix` mode preserves Latin loanwords; the eval also runs `translit` mode and
+scores it against a hand-authored romanization to get the script-invariant number.
+
+Caveat, stated rather than buried: on ta-IN the romanized column carries a
+**romanization-convention offset** (clean scores 0.032 native but 0.226 romanized — the
+recognition is near-perfect, the hand-authored spelling simply differs from Saaras's). For
+Tamil it is a *relative* regression detector, not an accuracy figure. Hindi's convention
+happens to line up, so both columns are meaningful there.
+
+### Phase 2 notes — read these before touching the eval plane
+
+- **The golden set's ground truth is the authored script, not a model output.** The audio is
+  Bulbul-synthesized, so building the "expected transcript" by running Saaras over it would be
+  Saaras-vs-Saaras — a model marking its own homework, and a number that cannot fall no matter
+  how bad the model gets. Saaras still runs over each clip, but only as a **QA gate** ("did
+  Bulbul say what we asked?"), in `translit` mode — *not* the production `codemix` mode. A gate
+  that grades a mode with itself quarantines precisely the records that mode is worst at and
+  leaves a set of easy ones that scores green and measures nothing.
+- **The QA gate scores CER, not WER.** Romanization has no single spelling convention: Saaras
+  writes "maadhangalaaga" where a human writes "maathangalaaga". WER scores that pair 0.60 and
+  quarantines a flawless record; CER sees ~0.1. An earlier revision of the gate quarantined all
+  six code-mixed records, every one of which Bulbul had spoken correctly.
+- **`/transliterate` is not a pure function and is not in the metric path.** For `ta-IN` it is
+  non-deterministic and degenerates into a repetition loop ("… uraiya uraiya uraiya" ×80) on
+  byte-identical input; `hi-IN` is stable. A metric that called it would report API jitter as a
+  regression. The romanized reference is hand-authored instead. Saaras `translit` *mode*, by
+  contrast, is deterministic across repeat calls on both languages — that one is safe.
+- **Saaras returns an empty transcript, not an error, when you hammer it.** Opening 40
+  WebSockets back-to-back made a third of them come back with nothing at all. An empty
+  transcript is indistinguishable from "the caller said nothing", so a rate limiter would have
+  silently poisoned the golden set with blank references and scored every one as a 100% model
+  error. The build and the runner pace themselves and back off; that is not politeness, it is
+  the difference between measuring a model and measuring a rate limiter.
+- **The judge is saturated on Hindi and cannot gate anything there.** 19 of 20 records scored a
+  flat 5.0, so chrF↔judge Spearman is 0.141 — there is nothing to correlate with. On Tamil the
+  judge actually discriminates (2.5–5.0) and agreement rises to 0.473. This is the
+  "metric + judge, never judge alone" rule earning its keep: low agreement is a *finding*, not
+  a failure, and here it says the judge's Hindi scores are noise.
+- **COMET is not implemented, and no fake number stands in for it.** It is a Python model
+  (`unbabel-comet`, ~2GB checkpoint) with no TypeScript port; wiring it in means a Python
+  sidecar, which is a real piece of work and not a Phase 2 line item. chrF + LLM-judge +
+  their agreement ship instead. This is the one Phase 2 checklist item not delivered.
+- **Live STT `latency_ms` is not model latency.** A live trace's STT hop spans the caller
+  actually speaking — Saaras emits nothing until the VAD endpoint triggers a flush — so the
+  5.2s in production traces is a human talking. The offline eval times STT from
+  audio-feed-start instead. Never put the two on one chart without saying which is which.
+- **Synthetic audio is a lower bound on difficulty.** TTS speech is cleaner than a real call
+  from a field. `consent: "synthetic"` is truthful provenance and the set is a regression
+  detector, not an accuracy claim. The `noisy` bucket is additive white noise at a stated
+  10dB SNR — honest, and not a substitute for real room noise.
+- **`pnpm dev` leaves a gateway bound to :8787.** A stale one silently steals the port from the
+  next run, the new gateway fails to bind, and the smoke test then talks to a dead stack — which
+  looks exactly like an intermittent voice-loop bug and cost an hour of chasing one. Kill the
+  port, not the process name, before concluding the loop is broken.
 
 ## Phase 3 — Regression dashboard (1–2 days)
 

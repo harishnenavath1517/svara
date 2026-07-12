@@ -9,17 +9,25 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "start": "tsx src/cli.ts run",
-    "report": "tsx src/cli.ts report",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "start": "tsx --env-file=../../.env src/cli.ts run",
+    "report": "tsx --env-file=../../.env src/cli.ts report",
+    "golden:build": "tsx --env-file=../../.env src/build-golden.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "smoke": "tsx --env-file=../../.env src/smoke.ts"
   },
   "dependencies": {
+    "@svara/db": "workspace:*",
+    "@svara/orchestrator": "workspace:*",
     "@svara/sarvam": "workspace:*",
-    "@svara/shared": "workspace:*"
+    "@svara/shared": "workspace:*",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "tsx": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "@types/ws": "^8.18.1"
   }
 }

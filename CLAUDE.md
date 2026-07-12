@@ -49,13 +49,15 @@ Full design: `docs/ARCHITECTURE.md`. Eval detail: `docs/EVAL_STRATEGY.md`.
 apps/
   web/          Next.js 15 — call UI + eval dashboard
   gateway/      Node WS service — VAD, barge-in, session, streams to orchestrator
+  sink/         Consumes svara.traces + svara.turns → Postgres. Idempotent; replayable.
 packages/
-  sarvam/       Typed Sarvam client (STT/TTS/translate/chat), streaming helpers
+  sarvam/       Typed Sarvam client (STT/TTS/translate/chat/transliterate), streaming helpers
   orchestrator/ Temporal workflows + activities (the turn saga)
-  eval/         Golden-set loader, scorers (WER/chrF/judge/latency), runner CLI
-  shared/       Types, trace-event schema, language codes, constants
+  eval/         Golden-set loader + builder, scorers (WER/chrF/judge/latency), runner CLI, smoke
+  db/           Postgres schema + typed access. Shared by sink, eval, and the dashboard.
+  shared/       Types, trace-event schema, language codes, constants, WAV + blob store
 infra/          docker-compose + Temporal/Redpanda/Qdrant config
-evals/golden/   Golden dataset: audio + labels, per language
+evals/golden/   Golden dataset: hand-authored source + synthesized audio, per language
 docs/           Architecture, eval strategy, API ref, roadmap, data contracts
 ```
 
@@ -70,13 +72,26 @@ build and nothing to go stale.
 
 ```bash
 pnpm install
-pnpm infra:up          # docker-compose up + create svara.traces / svara.turns topics
+pnpm infra:up          # docker-compose up + create topics + apply the Postgres schema
 pnpm infra:down
-pnpm dev               # web + gateway + temporal worker in parallel
+pnpm dev               # web + gateway + temporal worker + trace sink, in parallel
+pnpm golden:build      # synthesize the golden set (Bulbul) and QA it (Saaras). Caches audio.
 pnpm eval              # run the offline eval harness against the golden set
+pnpm eval --against <run_id>          # diff two runs — this is the deliverable
 pnpm eval:report       # write/refresh dashboard data from the latest run
+pnpm --filter @svara/eval run smoke   # drive one real turn through the live loop
 pnpm typecheck && pnpm test
 ```
+
+`pnpm eval` is the model harness; it calls the hops directly and would stay green while the
+orchestration underneath it was broken. `run smoke` is the check that the thing we *ship* still
+works — it plays a golden clip into the gateway as a caller and asserts a full turn comes back.
+Run it after touching a hop, the bus, or the gateway.
+
+If the loop suddenly can't complete a turn: **check the port before you debug the code.** A
+stale `pnpm dev` keeps :8787 bound, the new gateway silently fails to bind, and the smoke test
+then talks to a dead stack — which is indistinguishable from an intermittent product bug and
+has already cost an hour once. Kill the port, not the process name.
 
 Local ports (from `infra/docker-compose.yml`): Redpanda **19092** (9092 is in-network only —
 `REDPANDA_BROKERS` must say 19092), Redpanda Console 8080, Temporal 7233, Temporal UI 8233,
@@ -113,6 +128,18 @@ that scored nothing is worse than no eval run. Don't "fix" either by making it e
    `docs/DATA_CONTRACTS.md`, typed as `TraceEvent` in `packages/shared`. Emit on failure too
    (set `error`, still record `latency_ms`) — failed turns are the most valuable eval data.
    The eval plane is dead without this. Treat a missing trace as a bug, not an optimization.
+   Concretely: **the whole hop body goes inside the `try`, including the part that waits on the
+   bus.** `respond` used to wait for STT *above* its try block, so a hop that stalled there
+   emitted nothing at all — no error, no latency — and the turn simply vanished from the eval
+   plane at the exact moment it most needed explaining.
+8. **Never score a model with itself.** The golden set's ground truth is the hand-authored
+   script, not a Saaras transcript of Bulbul's audio — that would be one model grading its own
+   homework, and a number that cannot fall no matter how far quality degrades. The QA gate runs
+   in a *different* STT mode (`translit`) from the one it grades (`codemix`), for the same
+   reason. And **naive WER cannot score code-mixed ASR**: Saaras hears "Aadhaar card" perfectly
+   and writes it in Devanagari, which token WER counts as four substitutions. Report the
+   script-sensitive and script-invariant numbers side by side; the gap is the finding. See
+   `docs/EVAL_STRATEGY.md`.
 5. **Barge-in is a P0 feature**, not polish. The gateway must cancel in-flight TTS the
    moment VAD detects the user speaking.
 6. **Temporal owns the turn.** STT/LLM/TTS are activities with per-hop timeouts and
