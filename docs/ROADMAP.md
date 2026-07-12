@@ -236,13 +236,85 @@ configuration change rather than a quality change, and the harness does not get 
 
 ## Phase 4 — Stretch (pick per target role)
 
-- [ ] **Sim angle — React Flow builder:** node canvas over the existing activities (one node
+- [x] **Sim angle — React Flow builder:** node canvas over the existing activities (one node
       per hop, edges = the data contract), run a composed flow live. Closes the
       node-editor gap for Sim directly.
 - [ ] **Content angle — localizer:** paste a YouTube/podcast link → STT → translate → TTS
       re-dub into 5 languages. Lower depth, high shareability; use as the post, not the repo.
 - [ ] Online evals: sample live traffic, judge async off the trace stream, alert on drift.
 - [ ] Telephony ingress (SIP) for a real "call the number" demo.
+
+### Phase 4 (flow builder) — done. `/flow`
+
+One node per Temporal activity, edges typed by `DATA_CONTRACTS.md`, and a ▶ that drives a
+real turn through the real gateway. The knobs are not a settings panel bolted to a picture:
+each node's config **is** the object its activity takes as input (`FlowConfig` in
+`packages/shared/src/flow.ts`), so one node on screen = one config object = one activity
+input = one trace row, and there is nowhere for a knob to hide that the runtime doesn't read.
+
+**The whole feature is really one problem: a node editor that can change the config is a node
+editor that can poison the eval plane.** `config_hash` is the trace's claim about *which
+configuration produced this number*. It was a module constant — which was safe for exactly as
+long as the configuration was a constant too. The moment a caller can retune the LLM between
+turns, a fixed hash files the retuned turns under the baseline's name, silently corrupting
+every latency percentile and every run-over-run diff downstream, with nothing anywhere able to
+detect it. So `configHashOf(flow)` is a function now, `turnContext()` takes the hash of the
+flow the turn *actually ran*, and `flow.test.ts` fails if any field of `FlowConfig` can move
+without moving the hash.
+
+Consequences and findings, in the order they cost time:
+
+- **`config_hash` has rotated (v1 → v2), and that invalidates the stored baseline.** The
+  fingerprint now covers every knob a node can move (temperature, max_tokens, thinking,
+  speaker, pace), not just models + mode + prompt version. It is versioned (`"v": 2`) so the
+  rotation is legible rather than looking like a corrupted hash. **Run `pnpm eval` once to
+  re-baseline**: a diff against run `58ab3e4c` is now correctly stamped NOT COMPARABLE, which
+  is the harness doing its job, not failing at it.
+- **`stt.lang` is deliberately NOT in the hash, and it is the one exclusion worth arguing
+  about.** It plainly changes what STT emits — but `config_hash` exists to answer "are these
+  two numbers comparable?", and language is a property of the *call*, not of the configuration
+  under test. Hashing it was tried and caught by the smoke test: the gateway advertised one
+  hash on `GET /flow` while every real call — which always sets a language — traced a
+  *different* one. Worse, hi-IN and ta-IN calls landed in different config buckets, and neither
+  could ever match an eval run's hash (the harness scores every language under one config), so
+  live traffic would have been NOT COMPARABLE to the baseline forever. A dimension the schema
+  already models as a column does not belong inside an opaque hash.
+- **The browser is not the authority.** Every flow is `sanitizeFlow`d server-side and the
+  gateway echoes back what it *resolved* (`ready` / `flow_ack`); the canvas renders that, never
+  its own optimistic copy. Verified against the live gateway: a bulbul:v2 speaker (`anushka`)
+  resolves to `shubh` instead of 400ing mid-call, `pace: 99` clamps to 2, `temperature: "hot"`
+  falls back rather than reaching the model as `NaN`, and a deprecated `saarika` mode is
+  refused at the boundary (guardrail 1, enforced in code and not just in prose).
+- **The edges don't drag, and that's the point.** The three hops start *concurrently* and hand
+  off through an in-worker bus — TTS is subscribed before the LLM has written a word. An edge
+  drawn from TTS back to STT is not a pipeline the runtime can honour, and a canvas that
+  accepted it would be drawing a flow that does not exist. What *is* configurable is exactly
+  what the runtime reads.
+- **Live node states are inferred; the numbers are not.** "Active"/"done" come from the
+  caller's own socket (coarse, and labelled as such — Saaras emits no partials, so STT jumps
+  straight to done). The millisecond figures are fetched back from Postgres: they are the
+  hop's own trace rows, the same ones `/traces` and the eval plane read. A hop that fails
+  before emitting anything is invisible to the inference and visible only in the trace — which
+  is the whole argument for going back to the database for a number the browser could have
+  guessed at.
+- **`next build` had never worked.** Not a Phase 4 regression — it fails identically on the
+  Phase 3 commit. The `@svara/shared` barrel re-exports `blob.ts` → `node:fs`/`node:path`, and
+  any `"use client"` file importing the barrel drags those into the browser bundle, which
+  webpack cannot resolve for a web target. `next dev` served the pages happily, CI only ran
+  `typecheck` + `test` + eval, and so a dashboard that could not be production-built shipped
+  green for two phases. Fixed by splitting the package: `@svara/shared/browser` is the pure
+  half (constants, types, wire, flow + its sanitizer) and client components import from there.
+  It also keeps `sarvamApiKey()` and the blob store off the client's import graph entirely,
+  which is a cheaper way to honour guardrail 2 than remembering to.
+
+Latency is unchanged by this phase, and the check is worth recording because the raw number
+looks alarming: first-audio now measures **1062–1757 ms** against the 800 ms budget, versus the
+**860 ms** in the Phase 1 notes. That is not a regression — a stashed A/B on the Phase 3 commit,
+same stack and same network, gives **1068 / 1190 / 1664 ms**. The request bodies the hops send
+are byte-identical before and after; today's Sarvam/network conditions are simply slower than
+the day Phase 1 was measured. Per-hop, from the traces: LLM TTFB 312–390 ms (inside its 500 ms
+budget, thinking still off), TTS TTFB 553–610 ms, and STT's ~7.7 s "latency" is the caller
+speaking, exactly as Phase 2's notes warn.
 
 ## Definition of done (for the portfolio)
 

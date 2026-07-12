@@ -2,7 +2,6 @@ import { ApplicationFailure, Context } from "@temporalio/activity";
 import {
   chat,
   createConfig,
-  DEFAULT_SPEAKER,
   sentences as toSentences,
   synthesize as ttsSynthesize,
   transcribe as sttTranscribe,
@@ -74,7 +73,7 @@ function rethrow(traceId: string, err: unknown): never {
  * stream, which is what makes Saaras finalize.
  */
 export async function transcribe(input: TranscribeInput): Promise<TranscribeOutput> {
-  const { ctx } = input;
+  const { ctx, stt } = input;
   const bus = turnBus(ctx.trace_id);
   const channel = gatewayChannel();
   const activity = Context.current();
@@ -82,7 +81,7 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeOutp
 
   let ttfb: number | null = null;
   let text = "";
-  let lang: TraceLanguage = input.lang;
+  let lang: TraceLanguage = stt.lang;
 
   // Tees the caller's audio on its way to Saaras. Passive: it never holds a frame
   // back, and the WAV is only written once the utterance has already ended.
@@ -91,7 +90,7 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeOutp
   try {
     const stream = sttTranscribe(
       tee.tap(channel.audioStream(ctx.trace_id)),
-      { lang: input.lang, mode: input.mode, signal: hopSignal(ctx.trace_id) },
+      { lang: stt.lang, mode: stt.mode, signal: hopSignal(ctx.trace_id) },
       config,
     );
     for await (const transcript of stream) {
@@ -125,7 +124,7 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeOutp
       hop: "stt",
       lang,
       model: MODELS.stt,
-      mode: input.mode,
+      mode: stt.mode,
       input_ref: inputRef,
       text_out: text,
       latency_ms: latency,
@@ -143,7 +142,7 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeOutp
       hop: "stt",
       lang,
       model: MODELS.stt,
-      mode: input.mode,
+      mode: stt.mode,
       input_ref: inputRef,
       text_out: text.length > 0 ? text : null,
       latency_ms: latency,
@@ -165,7 +164,7 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeOutp
  * RAG grounding lands in Phase 2; `rag_context_ids` is honestly empty until then.
  */
 export async function respond(input: RespondInput): Promise<RespondOutput> {
-  const { ctx } = input;
+  const { ctx, llm: llmConfig } = input;
   const bus = turnBus(ctx.trace_id);
   const channel = gatewayChannel();
   const activity = Context.current();
@@ -214,7 +213,9 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
     emitTrace(ctx, {
       hop: "llm",
       lang,
-      model: optionalEnv("LLM_MODEL", MODELS.llm),
+      // The model the flow actually ran, not the deployment's default. A trace
+      // that names the wrong model is worse than a trace with no model at all.
+      model: llmConfig.model,
       mode: null,
       text_in: null,
       text_out: null,
@@ -234,7 +235,9 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
     emitTrace(ctx, {
       hop: "llm",
       lang,
-      model: optionalEnv("LLM_MODEL", MODELS.llm),
+      // The model the flow actually ran, not the deployment's default. A trace
+      // that names the wrong model is worse than a trace with no model at all.
+      model: llmConfig.model,
       mode: null,
       text_in: null,
       text_out: null,
@@ -251,7 +254,24 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
   ];
 
   try {
-    const tokens = chat(messages, { signal: hopSignal(ctx.trace_id) }, config);
+    const tokens = chat(
+      messages,
+      {
+        model: llmConfig.model,
+        temperature: llmConfig.temperature,
+        maxTokens: llmConfig.maxTokens,
+        // `false` for every call the helpline serves — DEFAULT_FLOW says so, and
+        // chat() would default it off anyway. It is a knob at all only so the
+        // /flow canvas can demonstrate the cost: sarvam-30b's reasoning tokens
+        // are billed against maxTokens *before* the reply, and at 512 it never
+        // reaches a first word (packages/sarvam/src/chat.ts). Turning it on is a
+        // config change, so the turn's traces carry a different config_hash and
+        // cannot contaminate the baseline.
+        thinking: llmConfig.thinking,
+        signal: hopSignal(ctx.trace_id),
+      },
+      config,
+    );
     for await (const sentence of toSentences(tokens)) {
       ttfb ??= Date.now() - genStartedAt;
       activity.heartbeat();
@@ -272,7 +292,9 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
     emitTrace(ctx, {
       hop: "llm",
       lang,
-      model: optionalEnv("LLM_MODEL", MODELS.llm),
+      // The model the flow actually ran, not the deployment's default. A trace
+      // that names the wrong model is worse than a trace with no model at all.
+      model: llmConfig.model,
       mode: null,
       text_in: prompt,
       text_out: reply,
@@ -286,7 +308,9 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
     emitTrace(ctx, {
       hop: "llm",
       lang,
-      model: optionalEnv("LLM_MODEL", MODELS.llm),
+      // The model the flow actually ran, not the deployment's default. A trace
+      // that names the wrong model is worse than a trace with no model at all.
+      model: llmConfig.model,
       mode: null,
       text_in: prompt,
       text_out: reply.length > 0 ? reply : null,
@@ -305,7 +329,7 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
  * written anything, and blocks on the bus until sentence 1 closes.
  */
 export async function synthesize(input: SynthesizeInput): Promise<SynthesizeOutput> {
-  const { ctx } = input;
+  const { ctx, tts } = input;
   const bus = turnBus(ctx.trace_id);
   const channel = gatewayChannel();
   const activity = Context.current();
@@ -332,8 +356,10 @@ export async function synthesize(input: SynthesizeInput): Promise<SynthesizeOutp
       sentences,
       {
         lang,
-        speaker: input.speaker ?? optionalEnv("TTS_SPEAKER", DEFAULT_SPEAKER),
-        pace: input.pace,
+        // Already sanitized against the v3 roster by the gateway, so a v2 speaker
+        // can't reach bulbul and 400 the call halfway through the reply.
+        speaker: tts.speaker,
+        pace: tts.pace,
         signal: hopSignal(ctx.trace_id),
       },
       config,

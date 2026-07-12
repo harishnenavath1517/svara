@@ -1,4 +1,4 @@
-import type { SttMode } from "./constants.js";
+import type { LlmNodeConfig, SttNodeConfig, TtsNodeConfig } from "./flow.js";
 import type { LanguageCode, TraceLanguage } from "./languages.js";
 
 /**
@@ -44,12 +44,16 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * Each activity takes the turn context plus exactly one node's worth of config
+ * (`FlowConfig` in flow.ts). That is not cosmetic symmetry: it is what makes the
+ * `/flow` canvas honest. One node on screen = one config object = one activity
+ * input = one trace row. Nothing on that canvas can be a knob the runtime doesn't
+ * read, and nothing the runtime reads can be a knob the canvas doesn't show.
+ */
 export interface TranscribeInput {
   ctx: TurnContext;
-  /** Pass "unknown" to let saaras:v3 auto-detect. */
-  lang: TraceLanguage;
-  /** "codemix" for real call audio; "verbatim" when building golden truth. */
-  mode: SttMode;
+  stt: SttNodeConfig;
 }
 
 /** The final transcript. Partials went to the bus and the caller's UI as they landed. */
@@ -64,6 +68,7 @@ export interface RespondInput {
   ctx: TurnContext;
   /** Prior turns, oldest first. The current utterance arrives over the bus. */
   history: ChatMessage[];
+  llm: LlmNodeConfig;
 }
 
 export interface RespondOutput {
@@ -78,12 +83,11 @@ export type RespondActivity = (input: RespondInput) => Promise<RespondOutput>;
 export interface SynthesizeInput {
   ctx: TurnContext;
   /**
-   * bulbul:v3 speaker — lowercase and case-sensitive, and the v2 roster
-   * (anushka, meera) is rejected by v3. Defaults to TTS_SPEAKER.
+   * Speaker is lowercase and case-sensitive, and the v2 roster (anushka, meera)
+   * is rejected by bulbul:v3 — which is why the gateway sanitizes against
+   * TTS_SPEAKERS before a name ever reaches this activity.
    */
-  speaker?: string;
-  /** 0.5–2.0. */
-  pace?: number;
+  tts: TtsNodeConfig;
 }
 
 export interface SynthesizeOutput {

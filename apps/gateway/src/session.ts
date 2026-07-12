@@ -1,14 +1,22 @@
 import { randomUUID } from "node:crypto";
 import {
-  DEFAULT_STT_MODE,
+  configHashOf,
   emitTurn,
+  serverDefaultFlow,
   startTurn,
   turnContext,
   type GatewayFrame,
   type WorkerFrame,
 } from "@svara/orchestrator";
-import { MIC_SAMPLE_RATE, optionalEnv } from "@svara/shared";
-import type { ChatMessage, ServerMessage, StartMessage, TraceLanguage } from "@svara/shared";
+import { MIC_SAMPLE_RATE, sanitizeFlow } from "@svara/shared";
+import type {
+  ChatMessage,
+  FlowConfig,
+  FlowPatch,
+  ServerMessage,
+  StartMessage,
+  TraceLanguage,
+} from "@svara/shared";
 import type { Client, WorkflowHandle } from "@temporalio/client";
 import type { WebSocket } from "ws";
 import { Vad } from "./vad.js";
@@ -29,6 +37,13 @@ const PREROLL_FRAMES = 6;
 interface ActiveTurn {
   traceId: string;
   handle: Promise<WorkflowHandle>;
+  /**
+   * The flow this turn was started with, and the hash its traces already carry.
+   * Frozen at `#beginTurn`: a `configure` that lands mid-turn must not retune the
+   * hops that are already running, because their traces have already made a claim
+   * about which configuration produced them.
+   */
+  flow: FlowConfig;
   startedAt: number;
   /** When VAD closed the mic. First-audio latency is measured from here. */
   micClosedAt: number | null;
@@ -50,8 +65,9 @@ export class Session {
   readonly #history: ChatMessage[] = [];
   readonly #preroll: Buffer[] = [];
 
-  #lang: TraceLanguage = "unknown";
-  #speaker: string | undefined;
+  /** The flow the *next* turn will run with, and its hash. Always server-resolved. */
+  #flow: FlowConfig = serverDefaultFlow();
+  #configHash: string = configHashOf(this.#flow);
   #turnIndex = 0;
   #turn: ActiveTurn | null = null;
   #started = false;
@@ -63,10 +79,38 @@ export class Session {
   }
 
   onStart(message: StartMessage): void {
-    this.#lang = message.lang ?? "unknown";
-    this.#speaker = message.speaker ?? optionalEnv("TTS_SPEAKER", "shubh");
+    // `lang` is sugar for flow.stt.lang, kept because most callers set only that.
+    // The explicit flow wins when both are present: it is the more specific claim.
+    const lang: TraceLanguage | undefined = message.flow?.stt?.lang ?? message.lang;
+    this.#applyFlow({
+      ...message.flow,
+      stt: { ...message.flow?.stt, ...(lang === undefined ? {} : { lang }) },
+    });
     this.#started = true;
-    this.#send({ type: "ready", session_id: this.id });
+    this.#send({ type: "ready", session_id: this.id, flow: this.#flow, config_hash: this.#configHash });
+  }
+
+  /**
+   * Retune the hops from the `/flow` canvas. Takes effect on the next turn — a
+   * turn already in flight keeps the flow it was started with (see ActiveTurn).
+   */
+  onConfigure(patch: FlowPatch): void {
+    this.#applyFlow(patch);
+    this.#send({ type: "flow_ack", flow: this.#flow, config_hash: this.#configHash });
+  }
+
+  /**
+   * The one door config comes through, and the only place the hash is computed.
+   *
+   * The client's patch is a *request*, never a setting: it is resolved against the
+   * server's default, and what comes back out is echoed to the client so the
+   * canvas renders the flow that will actually run rather than the one it asked
+   * for. The hash is recomputed here, next to the flow it describes, because the
+   * two drifting apart is the failure this whole feature has to not have.
+   */
+  #applyFlow(patch: FlowPatch): void {
+    this.#flow = sanitizeFlow(patch, serverDefaultFlow());
+    this.#configHash = configHashOf(this.#flow);
   }
 
   /** A PCM16 frame from the caller's mic. This is the hot path — keep it cheap. */
@@ -131,25 +175,24 @@ export class Session {
 
   #beginTurn(): void {
     const traceId = randomUUID();
-    const ctx = turnContext(this.id, traceId, this.#turnIndex);
+    // Snapshot both, together. The turn's traces will claim this hash, so they
+    // have to be produced by this flow — a `configure` arriving one frame later
+    // must not be able to slide in between them.
+    const flow = this.#flow;
+    const ctx = turnContext(this.id, traceId, this.#turnIndex, this.#configHash);
     this.#turnIndex += 1;
 
     const turn: ActiveTurn = {
       traceId,
+      flow,
       startedAt: Date.now(),
       micClosedAt: null,
       firstAudioAt: null,
       transcript: "",
       reply: "",
-      lang: this.#lang,
+      lang: flow.stt.lang,
       cancelled: false,
-      handle: startTurn(this.#temporal, {
-        ctx,
-        lang: this.#lang,
-        mode: DEFAULT_STT_MODE,
-        history: [...this.#history],
-        speaker: this.#speaker,
-      }),
+      handle: startTurn(this.#temporal, { ctx, flow, history: [...this.#history] }),
     };
     this.#turn = turn;
 

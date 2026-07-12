@@ -18,6 +18,7 @@
     "eval": "pnpm --filter @svara/eval run start",
     "eval:report": "pnpm --filter @svara/eval run report",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm -r run test"
+    "test": "pnpm -r run test",
+    "build": "pnpm --filter @svara/web run build"
   }
 }

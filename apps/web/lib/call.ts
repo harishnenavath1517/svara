@@ -1,5 +1,8 @@
-import { MIC_SAMPLE_RATE, TTS_OUTPUT_SAMPLE_RATE } from "@svara/shared";
-import type { ServerMessage, TraceLanguage, TurnEndMessage } from "@svara/shared";
+// `/browser`, not the package root: the root barrel reaches node:fs through
+// blob.ts, and pulling that into a client bundle breaks `next build`. See
+// packages/shared/src/browser.ts.
+import { MIC_SAMPLE_RATE, TTS_OUTPUT_SAMPLE_RATE } from "@svara/shared/browser";
+import type { FlowConfig, FlowPatch, ServerMessage, TurnEndMessage } from "@svara/shared/browser";
 
 /**
  * The caller's side of the voice loop: mic → gateway → speaker.
@@ -22,6 +25,16 @@ export interface CallHandlers {
   onReply: (text: string) => void;
   onTurnEnd: (turn: TurnEndMessage) => void;
   onError: (message: string) => void;
+  /**
+   * The flow the gateway *resolved*, on connect and after every `configure`.
+   *
+   * The `/flow` canvas renders this and never its own optimistic copy. Ask for a
+   * bulbul:v2 speaker and what comes back is `shubh`; showing the request instead
+   * of the resolution would make the canvas describe a call that didn't happen.
+   */
+  onFlow?: (flow: FlowConfig, configHash: string) => void;
+  /** First audio of a turn reached the speaker. The canvas lights the TTS node here. */
+  onAudio?: () => void;
 }
 
 export class VoiceCall {
@@ -40,7 +53,7 @@ export class VoiceCall {
     this.#handlers = handlers;
   }
 
-  async start(url: string, lang: TraceLanguage): Promise<void> {
+  async start(url: string, flow: FlowPatch): Promise<void> {
     this.#handlers.onStatus("connecting");
 
     this.#stream = await navigator.mediaDevices.getUserMedia({
@@ -58,7 +71,7 @@ export class VoiceCall {
     this.#socket = socket;
 
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: "start", lang }));
+      socket.send(JSON.stringify({ type: "start", flow }));
       this.#handlers.onStatus("live");
       this.#pipeMic(mic);
     };
@@ -87,9 +100,21 @@ export class VoiceCall {
     capture.connect(mic.destination);
   }
 
+  /**
+   * Retune the hops. The gateway applies it to the next turn, sanitizes it, and
+   * answers with the resolved flow on `onFlow` — which is the only thing the UI
+   * should draw.
+   */
+  configure(flow: FlowPatch): void {
+    if (this.#socket?.readyState !== WebSocket.OPEN) return;
+    this.#socket.send(JSON.stringify({ type: "configure", flow }));
+  }
+
   #onMessage(message: ServerMessage): void {
     switch (message.type) {
       case "ready":
+      case "flow_ack":
+        this.#handlers.onFlow?.(message.flow, message.config_hash);
         return;
       case "partial":
       case "final":
@@ -99,6 +124,7 @@ export class VoiceCall {
         this.#handlers.onReply(message.text);
         return;
       case "audio":
+        this.#handlers.onAudio?.();
         this.#enqueue(message.b64);
         return;
       case "stop_audio":

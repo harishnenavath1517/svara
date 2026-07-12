@@ -14,6 +14,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <nav>
           <Link href="/">Call</Link>
+          <Link href="/flow">Flow builder</Link>
           <Link href="/evals">Eval runs</Link>
           <Link href="/traces">Live traces</Link>
         </nav>

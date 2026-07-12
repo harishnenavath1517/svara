@@ -24,6 +24,15 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
+      # `next build` — the only internal package with a build step, and the check
+      # that was missing. typecheck and test both passed for two phases on a
+      # dashboard that could not actually be built: a "use client" file importing
+      # the @svara/shared barrel pulls blob.ts -> node:fs into the browser bundle,
+      # which tsc is perfectly happy with and webpack is not. `next dev` served it
+      # anyway, so nothing caught it. Needs no secrets: the DB-backed pages are
+      # force-dynamic and the pool is lazy, so nothing connects at build time.
+      - run: pnpm build
+
   # The quality gate. Replays the golden set through the real Sarvam hops, scores
   # it, diffs it against main, and fails the build on a regression past threshold.
   #

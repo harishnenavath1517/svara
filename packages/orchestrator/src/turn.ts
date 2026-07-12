@@ -1,4 +1,4 @@
-import type { ChatMessage, LanguageCode, SttMode, TraceLanguage, TurnContext } from "@svara/shared";
+import type { ChatMessage, FlowConfig, LanguageCode, TurnContext } from "@svara/shared";
 
 /**
  * The turn workflow's signature, kept out of workflows.ts so the gateway can
@@ -7,12 +7,15 @@ import type { ChatMessage, LanguageCode, SttMode, TraceLanguage, TurnContext } f
  */
 export interface TurnArgs {
   ctx: TurnContext;
-  /** "unknown" lets saaras:v3 detect the caller's language. */
-  lang: TraceLanguage;
-  mode: SttMode;
+  /**
+   * The resolved flow — already sanitized by the gateway, and already hashed into
+   * `ctx.config_hash`. The workflow hands each node's slice to its activity and
+   * adds nothing of its own: if a knob could be applied here instead, it would be
+   * a knob the config hash never saw.
+   */
+  flow: FlowConfig;
   /** Prior turns of the conversation, oldest first. */
   history: ChatMessage[];
-  speaker?: string;
 }
 
 export interface TurnResult {

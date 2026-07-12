@@ -1,7 +1,9 @@
 import { createServer } from "node:http";
 import {
+  configHashOf,
   connectTemporal,
   INTERNAL_WS_PATH,
+  serverDefaultFlow,
   type GatewayFrame,
   type WorkerFrame,
 } from "@svara/orchestrator";
@@ -32,7 +34,33 @@ const temporal = await connectTemporal();
 const sessions = new Map<string, Session>();
 const workers = new Set<WebSocket>();
 
-const server = createServer((_req, res) => {
+const server = createServer((req, res) => {
+  /**
+   * The flow this gateway will actually run a call with — the shipped defaults
+   * with *this deployment's* env overlaid, plus the config hash its traces will
+   * carry. The `/flow` canvas fetches it on mount and seeds itself from it.
+   *
+   * It has to come from here rather than being reconstructed in the browser or in
+   * Next: only this process knows its own `LLM_MODEL` and `TTS_SPEAKER`. A canvas
+   * that seeded from the client's copy of the defaults would silently show the
+   * wrong speaker on any deployment that overrode one — and would show it right up
+   * until the call was made.
+   *
+   * No secrets: model ids, an STT mode, a speaker name. The key never leaves
+   * `Secret` (guardrail 2), and it is not in the flow.
+   */
+  if (req.method === "GET" && new URL(req.url ?? "/", "http://localhost").pathname === "/flow") {
+    const flow = serverDefaultFlow();
+    res.writeHead(200, {
+      "content-type": "application/json",
+      // The dashboard is a different origin (:3000) from the gateway (:8787).
+      "access-control-allow-origin": "*",
+      "cache-control": "no-store",
+    });
+    res.end(JSON.stringify({ flow, config_hash: configHashOf(flow) }));
+    return;
+  }
+
   res.writeHead(200, { "content-type": "text/plain" });
   res.end("svara gateway\n");
 });
@@ -79,6 +107,7 @@ callers.on("connection", (socket: WebSocket) => {
       return;
     }
     if (message.type === "start") session.onStart(message);
+    else if (message.type === "configure") session.onConfigure(message.flow);
     else if (message.type === "stop") socket.close(1000, "caller hung up");
   });
 

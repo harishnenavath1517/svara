@@ -59,10 +59,13 @@ const { endTurn } = proxyActivities<typeof activities>({
 
 export async function turnWorkflow(args: TurnArgs): Promise<TurnResult> {
   try {
+    // One node's config to one activity, straight through. The workflow resolves
+    // no defaults of its own — a default applied here would be a difference in
+    // output that `ctx.config_hash` never attested to.
     const [stt, llm, tts] = await Promise.all([
-      transcribe({ ctx: args.ctx, lang: args.lang, mode: args.mode }),
-      respond({ ctx: args.ctx, history: args.history }),
-      synthesize({ ctx: args.ctx, speaker: args.speaker }),
+      transcribe({ ctx: args.ctx, stt: args.flow.stt }),
+      respond({ ctx: args.ctx, history: args.history, llm: args.flow.llm }),
+      synthesize({ ctx: args.ctx, tts: args.flow.tts }),
     ]);
     return {
       transcript: stt.text,

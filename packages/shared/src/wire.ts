@@ -1,3 +1,4 @@
+import type { FlowConfig, FlowPatch } from "./flow.js";
 import type { LanguageCode, TraceLanguage } from "./languages.js";
 
 /**
@@ -20,10 +21,24 @@ export const TTS_OUTPUT_SAMPLE_RATE = 24000;
 /** Client → gateway: open the call. Send once, before any audio. */
 export interface StartMessage {
   type: "start";
-  /** "unknown" (the default) lets saaras:v3 detect the caller's language. */
+  /**
+   * "unknown" (the default) lets saaras:v3 detect the caller's language.
+   * Sugar for `flow.stt.lang`, kept because most callers only ever set this one.
+   * If both are given, `flow.stt.lang` wins — it is the more specific statement.
+   */
   lang?: TraceLanguage;
-  /** bulbul:v3 speaker, lowercase. Defaults to the server's TTS_SPEAKER. */
-  speaker?: string;
+  /** Per-hop overrides. Sanitized by the gateway; the resolved flow comes back in `ready`. */
+  flow?: FlowPatch;
+}
+
+/**
+ * Client → gateway: retune the hops. Applies from the **next** turn — never to a
+ * turn already in flight, whose traces have already claimed a config hash.
+ * The gateway answers with `flow_ack` carrying what it actually resolved.
+ */
+export interface ConfigureMessage {
+  type: "configure";
+  flow: FlowPatch;
 }
 
 /** Client → gateway: hang up. */
@@ -31,12 +46,29 @@ export interface StopMessage {
   type: "stop";
 }
 
-export type ClientMessage = StartMessage | StopMessage;
+export type ClientMessage = StartMessage | ConfigureMessage | StopMessage;
 
-/** Gateway → client: the call is up. */
+/** Gateway → client: the call is up, and this is the flow it will actually run. */
 export interface ReadyMessage {
   type: "ready";
   session_id: string;
+  flow: FlowConfig;
+  config_hash: string;
+}
+
+/**
+ * Gateway → client: the resolved flow, after sanitization.
+ *
+ * The client renders *this*, never its own optimistic copy. Ask for a bulbul:v2
+ * speaker and the gateway hands back `shubh`; the canvas then shows `shubh`,
+ * because a canvas that displays a config the server didn't run is worse than no
+ * canvas at all. The `config_hash` is what the next turn's traces will carry — so
+ * a knob that moves it is visibly a knob that puts the run in a different bucket.
+ */
+export interface FlowAckMessage {
+  type: "flow_ack";
+  flow: FlowConfig;
+  config_hash: string;
 }
 
 /** Gateway → client: what the caller is saying, as Saaras hears it. */
@@ -86,6 +118,7 @@ export interface TurnEndMessage {
 
 export type ServerMessage =
   | ReadyMessage
+  | FlowAckMessage
   | TranscriptMessage
   | ReplyMessage
   | AudioMessage

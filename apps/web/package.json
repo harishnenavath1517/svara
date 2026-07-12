@@ -13,6 +13,7 @@
     "@svara/db": "workspace:*",
     "@svara/eval": "workspace:*",
     "@svara/shared": "workspace:*",
+    "@xyflow/react": "^12.11.2",
     "next": "^15.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"

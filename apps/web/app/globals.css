@@ -393,3 +393,162 @@ code {
 .active {
   font-weight: 700;
 }
+
+/* ---------- flow builder ---------- */
+
+/* React Flow measures its parent; without an explicit width it warns and lays out
+   against a zero-width box on first paint. */
+.canvas {
+  width: 100%;
+  height: 420px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  margin-bottom: 16px;
+}
+
+/* React Flow ships light-theme defaults; the app is dark. */
+.react-flow__node {
+  color: var(--text);
+}
+
+.hop-node {
+  width: 200px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  font-size: 12px;
+  transition: border-color 0.15s ease;
+}
+
+.hop-node.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px #5eead440;
+}
+
+.hop-node.done {
+  border-color: #5eead45c;
+}
+
+.hop-node.failed {
+  border-color: var(--danger);
+}
+
+.hop-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.hop-node-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.hop-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.hop-dot.active {
+  background: var(--accent);
+  animation: hop-pulse 1s ease-in-out infinite;
+}
+
+.hop-dot.done {
+  background: #5eead47a;
+}
+
+.hop-dot.failed {
+  background: var(--danger);
+}
+
+@keyframes hop-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.hop-node-activity {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+.hop-node-note {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.hop-knob {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.hop-knob-label {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.hop-knob select {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 4px;
+  font-size: 11px;
+  border-radius: 5px;
+}
+
+.hop-knob input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.hop-knob-value {
+  width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.hop-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.hop-check input {
+  accent-color: var(--danger);
+}
+
+/* The measured half of the node: what happened, not what we asked for. */
+.hop-node-metrics {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hop-node-wall {
+  font-size: 10px;
+}
+
+.flow-hash {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}

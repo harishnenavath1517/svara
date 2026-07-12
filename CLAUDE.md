@@ -80,8 +80,12 @@ pnpm eval              # run the offline eval harness against the golden set
 pnpm eval --against <run_id>          # diff two runs — this is the deliverable
 pnpm eval:report       # write/refresh dashboard data from the latest run
 pnpm --filter @svara/eval run smoke   # drive one real turn through the live loop
-pnpm typecheck && pnpm test
+pnpm typecheck && pnpm test && pnpm build
 ```
+
+`pnpm build` is `next build`, and it is not optional in the gate: it is the only check that
+compiles the browser bundle, and `typecheck` + `test` both stayed green for two phases on a
+dashboard `next build` could not compile (guardrail 10).
 
 `pnpm eval` is the model harness; it calls the hops directly and would stay green while the
 orchestration underneath it was broken. `run smoke` is the check that the thing we *ship* still
@@ -124,6 +128,23 @@ that scored nothing is worse than no eval run. Don't "fix" either by making it e
    an empty reply and no error. The `thinking: false` default in `packages/sarvam`'s `chat()`
    is what turns it off; don't remove it. And **barge-in cannot ride on Temporal
    cancellation** (heartbeat-throttled, seconds late) — the gateway aborts the hops in-band.
+9. **The config hash follows the config.** `config_hash` is the trace's claim about *which
+   configuration produced this number*. It is `configHashOf(flow)` — a function of the turn's
+   resolved `FlowConfig` — never a constant. If you add a knob that can change a hop's output,
+   add it to `flowFingerprint` in the same change, or you have built a machine that files one
+   configuration's results under another's name, silently and undetectably from downstream.
+   `packages/shared/src/flow.test.ts` fails if you forget. The one deliberate exclusion is
+   `stt.lang`: language is a property of the *call*, not the configuration, and the trace
+   already carries it as a column — hashing it stops live traffic from ever matching an eval
+   run. Client-supplied flows are `sanitizeFlow`d server-side; the browser is never the
+   authority, and the gateway echoes back what it actually resolved.
+10. **Client components import `@svara/shared/browser`, not `@svara/shared`.** The root barrel
+   re-exports `blob.ts` → `node:fs`/`node:path`; a `"use client"` file that pulls the barrel
+   drags those into the browser bundle and **`next build` fails** — while `next dev` serves the
+   page happily, so nothing notices until you ship. (That is exactly how a dashboard that could
+   not be production-built stayed green for two phases.) The `/browser` entry is the pure half:
+   constants, types, the wire contract, and the flow config. It also keeps `sarvamApiKey()` off
+   the client's import graph entirely.
 4. **Every hop emits a trace event** to Redpanda (`svara.traces`) with the schema in
    `docs/DATA_CONTRACTS.md`, typed as `TraceEvent` in `packages/shared`. Emit on failure too
    (set `error`, still record `latency_ms`) — failed turns are the most valuable eval data.

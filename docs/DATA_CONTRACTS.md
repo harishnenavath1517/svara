@@ -35,8 +35,43 @@ Rules:
 - Emit even on failure (set `error`, still record `latency_ms`). Failed turns are the most
   valuable eval data.
 - `config_hash` must be identical across all hops of a run so metrics attribute to a
-  specific configuration.
+  specific configuration, and it must **differ** the moment anything that can change an output
+  differs. It is `configHashOf(flow)` — a function of the turn's resolved `FlowConfig`, not a
+  constant. See "Flow config" below; this is the rule the `/flow` builder lives or dies by.
 - Never put raw audio in the event — store the blob, reference it.
+
+## Flow config (`FlowConfig`)
+
+`packages/shared/src/flow.ts`. The per-hop knobs that can change what a hop produces — what
+the `/flow` canvas edits, what the gateway resolves, and what each activity takes as input.
+
+```jsonc
+{
+  "stt": { "mode": "codemix", "lang": "unknown" },
+  "llm": { "model": "sarvam-30b", "temperature": 0.2, "maxTokens": 512, "thinking": false },
+  "tts": { "speaker": "shubh", "pace": 1 }
+}
+```
+
+One node = one config object = one activity input = one trace row. A knob that the runtime
+doesn't read has nowhere to hide, and neither does a parameter the canvas doesn't show.
+
+Rules:
+- **The client is never the authority.** A flow arriving on the wire is a *request*. The
+  gateway runs `sanitizeFlow(patch, serverDefaultFlow())` — total, never throws — and echoes
+  the resolved flow back (`ready` / `flow_ack`). A bulbul:v2 speaker becomes `shubh` rather
+  than a 400 mid-call; `pace: 99` clamps to 2; `temperature: "hot"` falls back rather than
+  reaching the model as `NaN`. The UI renders what came back, never what it sent.
+- **Every field is hashed into `config_hash`** (`flowFingerprint`, versioned `v: 2`).
+  `flow.test.ts` fails if you add a field and forget — a knob that moves an output without
+  moving the hash files one configuration's results under another's name, undetectably.
+- **`stt.lang` is the one deliberate exclusion.** It changes STT's output, but `config_hash`
+  answers "are these two numbers comparable?", and language is a property of the call, not the
+  configuration — the trace carries `lang` as its own column, and every eval score slices by
+  it. Hashing it puts hi-IN and ta-IN calls in different config buckets and stops live traffic
+  from ever matching an eval run's hash.
+- The topology is **fixed**. The three hops run concurrently and hand off through the in-worker
+  bus; an arbitrary user-drawn edge is not a pipeline the runtime can honour.
 
 ## Redpanda topics
 
@@ -146,11 +181,15 @@ cannot be handed a live microphone, and it cannot yield audio back as it produce
 streams do not cross the activity boundary — only correlation ids and summaries do:
 
 ```
-transcribe({ ctx, lang, mode })      -> { text, lang }
-respond({ ctx, history })            -> { text, lang, ragContextIds }
-synthesize({ ctx, speaker, pace })   -> { chunks, bytes, ttfb_ms }
+transcribe({ ctx, stt })             -> { text, lang }
+respond({ ctx, history, llm })       -> { text, lang, ragContextIds }
+synthesize({ ctx, tts })             -> { chunks, bytes, ttfb_ms }
 endTurn({ ctx })                     -> void      // non-cancellable teardown
 ```
+
+`stt` / `llm` / `tts` are the corresponding node of `FlowConfig` (above), handed straight
+through by the workflow. The workflow resolves **no defaults of its own**: a default applied
+there would be a difference in output that `ctx.config_hash` never attested to.
 
 The bytes flow around Temporal, through two channels keyed by `trace_id`:
 
@@ -177,6 +216,34 @@ activity body. Retryability is per hop, and not arbitrary:
 **Consequence to respect:** the bus lives in one worker process, so a turn's three activities
 must land on the same worker. True today. Before running more than one worker, move the bus
 onto Redis/NATS or pin the turn with a Temporal worker session.
+
+Know what this looks like when it breaks, because it does not look like a bus problem: a
+**second worker** on the task queue makes Temporal spread a turn's activities across two
+processes, the bus in each only ever sees half the turn, and the call simply hangs until the
+smoke test times out — no error, no trace, nothing to grep. It is easy to do by accident: the
+worker dials *out* to the gateway and binds no port, so killing `:8787` does not kill it, and a
+stale one from a previous `pnpm dev` survives and re-attaches to the new gateway. If the loop
+hangs, count the `[gateway] worker attached` lines before you debug anything else.
+
+## Client channel (caller ↔ gateway)
+
+`/voice`. Audio is raw binary PCM16 up, base64 in an `audio` message down; control is JSON both
+ways (`packages/shared/src/wire.ts`).
+
+| Direction | Message | Meaning |
+|-----------|---------|---------|
+| client → gateway | `start` | Opens the call. Optional `flow` (a `FlowPatch`) and `lang` (sugar for `flow.stt.lang`; the explicit flow wins). |
+| client → gateway | `configure` | Retune the hops from the `/flow` canvas. Applies from the **next** turn — never to a turn already in flight, whose traces have already claimed a `config_hash`. |
+| client → gateway | `stop` | Hang up. |
+| gateway → client | `ready` | The call is up, carrying the **resolved** `flow` and its `config_hash`. |
+| gateway → client | `flow_ack` | The resolved flow after a `configure`. The client renders this, never its own optimistic copy. |
+| gateway → client | `partial` / `final` / `reply` / `audio` / `stop_audio` / `turn_end` | The turn, as the caller experiences it. |
+
+`GET /flow` on the gateway's HTTP port returns the same `{ flow, config_hash }` for the server
+default. The canvas seeds from it rather than from its own copy of the defaults, because only
+that process knows its own `LLM_MODEL` and `TTS_SPEAKER` — a canvas seeded from the client's
+constants would show the wrong speaker on any deployment that overrode one, and would show it
+right up until the call was made.
 
 ## Internal channel (gateway ↔ worker)
 

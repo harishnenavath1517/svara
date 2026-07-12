@@ -91,16 +91,23 @@ export function emitTurn(event: TurnEvent): void {
   void publish(TOPICS.turns, event.session_id, event);
 }
 
+/**
+ * `configHash` is a parameter, not a constant, and that is load-bearing: it must
+ * be the hash of the flow *this turn actually ran with* (see `configHashOf`).
+ * Passing the shipped default here for a turn that was retuned on the `/flow`
+ * canvas would file its traces under a configuration that never produced them.
+ */
 export function turnContext(
   sessionId: string,
   traceId: string,
   turnIndex: number,
+  configHash: string = CONFIG_HASH,
 ): TurnContext {
   return {
     trace_id: traceId,
     session_id: sessionId,
     turn_index: turnIndex,
-    config_hash: CONFIG_HASH,
+    config_hash: configHash,
     git_sha: GIT_SHA,
   };
 }

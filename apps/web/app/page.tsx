@@ -1,7 +1,7 @@
 "use client";
 
-import { LANGUAGE_NAMES, LATENCY_BUDGET_MS, SPEECH_LANGUAGES } from "@svara/shared";
-import type { TraceLanguage, TurnEndMessage } from "@svara/shared";
+import { LANGUAGE_NAMES, LATENCY_BUDGET_MS, SPEECH_LANGUAGES } from "@svara/shared/browser";
+import type { TraceLanguage, TurnEndMessage } from "@svara/shared/browser";
 import { useCallback, useRef, useState } from "react";
 import { VoiceCall, type CallStatus } from "../lib/call";
 
@@ -44,7 +44,9 @@ export default function CallPage() {
     call.current = active;
 
     try {
-      await active.start(GATEWAY_URL, lang);
+      // Everything else — STT mode, model, speaker, pace — stays at the gateway's
+      // resolved default. Retuning the hops is what /flow is for.
+      await active.start(GATEWAY_URL, { stt: { lang } });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setStatus("idle");
