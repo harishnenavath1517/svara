@@ -1,0 +1,28 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# builds
+dist/
+.next/
+out/
+build/
+
+# eval artifacts
+evals/golden/audio/
+eval-runs/
+*.local
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# logs
+*.log

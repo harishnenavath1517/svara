@@ -1,0 +1,20 @@
+{
+  "name": "svara",
+  "private": true,
+  "description": "Real-time Indic voice agent with a first-class evaluation harness",
+  "packageManager": "pnpm@10.33.1",
+  "engines": { "node": ">=20" },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait && docker compose -f infra/docker-compose.yml run --rm redpanda-init",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "infra:logs": "docker compose -f infra/docker-compose.yml logs -f",
+    "eval": "pnpm --filter @svara/eval run start",
+    "eval:report": "pnpm --filter @svara/eval run report",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test"
+  }
+}

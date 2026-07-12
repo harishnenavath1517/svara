@@ -1,0 +1,11 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Single source of truth for shared tooling versions. Packages reference these
+# with "catalog:" so the whole workspace moves together.
+catalog:
+  typescript: ^5.9.3
+  "@types/node": ^22.18.0
+  tsx: ^4.20.6
+  vitest: ^3.2.4
