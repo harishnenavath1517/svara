@@ -19,6 +19,11 @@ const IDLE_STATES: Record<FlowNodeId, HopState> = {
   speaker: "idle",
 };
 
+const GATEWAY_DOWN =
+  "No gateway reachable. The voice loop runs locally — clone the repo and `pnpm dev`. " +
+  "The gateway is a long-lived WebSocket service, so it can't be hosted on the edge alongside " +
+  "this dashboard; /evals and /traces work here regardless.";
+
 /** The trace goes hop → Redpanda → sink → Postgres. It lands a beat after turn_end. */
 const TRACE_POLL_MS = 500;
 const TRACE_POLL_TRIES = 8;
@@ -75,7 +80,10 @@ export default function FlowPage() {
         setFlow(body.flow);
         setConfigHash(body.config_hash);
       } catch {
-        if (!cancelled) setError("gateway unreachable — is `pnpm dev` running?");
+        // The hosted dashboard has no gateway behind it and never will: the gateway
+        // is a long-lived WebSocket service, which an edge runtime drops. Say that,
+        // rather than leaving a visitor staring at a dead socket.
+        if (!cancelled) setError(GATEWAY_DOWN);
       }
     })();
     return () => {

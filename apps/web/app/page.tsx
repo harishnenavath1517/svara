@@ -104,7 +104,10 @@ export default function CallPage() {
       {error !== null && (
         <div className="panel error">
           {error}
-          {status === "idle" && " — is the gateway running? (pnpm dev)"}
+          {status === "idle" &&
+            " — the voice loop runs locally: clone the repo and `pnpm dev`. The gateway is a" +
+              " long-lived WebSocket service and can't be hosted on the edge, so the deployed" +
+              " dashboard serves /evals and /traces only."}
         </div>
       )}
 
