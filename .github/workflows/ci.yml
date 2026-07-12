@@ -1,0 +1,107 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Always runs, on every PR, with no secrets and no network calls to Sarvam.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  # The quality gate. Replays the golden set through the real Sarvam hops, scores
+  # it, diffs it against main, and fails the build on a regression past threshold.
+  #
+  # It needs SARVAM_API_KEY (a real one — this calls the real models; that is the
+  # point) and DATABASE_URL. Both are secrets, and a fork PR has neither, so the
+  # job SKIPS rather than passing vacuously: a gate that silently no-ops on the
+  # PRs it cannot run for is worse than no gate, because the green check still
+  # appears next to the merge button.
+  #
+  # DATABASE_URL is the *shared* eval Postgres, not a service container. An
+  # ephemeral database has no history, and with no history there is no baseline
+  # and therefore nothing to regress against — the gate could never fire. Runs
+  # accumulate; the baseline is the run recorded at main's commit.
+  eval:
+    runs-on: ubuntu-latest
+    needs: check
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The baseline is resolved by main's sha, so main's history has to be here.
+          fetch-depth: 0
+
+      - name: Check for secrets
+        id: secrets
+        run: |
+          if [ -z "$SARVAM_API_KEY" ] || [ -z "$DATABASE_URL" ]; then
+            echo "::warning::SARVAM_API_KEY or DATABASE_URL not available — eval gate skipped."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: steps.secrets.outputs.ready == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: steps.secrets.outputs.ready == 'true'
+
+      - name: Apply schema
+        if: steps.secrets.outputs.ready == 'true'
+        run: pnpm db:migrate
+
+      # The golden audio is committed (evals/golden/audio/*.wav), so there is
+      # nothing to synthesize here — a CI run that rebuilt the golden set would be
+      # scoring a *different* answer key than the baseline did, which is the one
+      # thing the golden_set_version guard exists to catch.
+      - name: Resolve baseline
+        if: steps.secrets.outputs.ready == 'true'
+        id: baseline
+        run: echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Run eval
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          pnpm eval \
+            --against "${{ steps.baseline.outputs.sha }}" \
+            --fail-on-regression \
+            --markdown eval-report.md \
+            --notes "ci ${{ github.event_name }} ${{ github.ref_name }}"
+
+      # Runs even when the gate failed — especially then. A regression whose detail
+      # only exists in a red job log is a regression nobody reads.
+      - name: Comment the diff
+        if: always() && steps.secrets.outputs.ready == 'true' && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: eval-report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.secrets.outputs.ready == 'true'
+        with:
+          name: eval-report
+          path: eval-report.md

@@ -200,6 +200,44 @@ The judge is the one place thinking should be **on**: `chat()` defaults to `thin
 because the voice loop cannot afford it (see `docs/SARVAM_API.md`), but an LLM judge is
 off the hot path and the reasoning is what you're paying for. Pass `thinking: true` there.
 
+## The CI gate — and where the thresholds came from
+
+`pnpm eval --fail-on-regression` is what runs on a PR. It scores the golden set, diffs the
+run against the run recorded at `main`'s commit, and exits non-zero if a gated metric got
+worse by more than its threshold. Thresholds live in `packages/eval/src/metrics/regression.ts`
+with the reason for each one written next to it.
+
+**They were measured, not guessed.** Runs `38a3c939` (hi-IN) and `710bc192` (ta-IN) scored the
+same records at the same `config_hash` as the combined run `58ab3e4c` — same code, same answer
+key, same models — so every delta between them is pure harness noise with no quality change
+underneath. That gave a noise floor, and the thresholds sit above it:
+
+| metric                     | measured noise | threshold | why |
+| -------------------------- | -------------- | --------- | --- |
+| `wer` / `cer` / `wer_romanized` | **0.000**  | 0.02      | Saaras is deterministic on identical bytes — WER noise is not "small", it is *zero*. A WER that moved, moved because something changed. |
+| `round_trip_wer`           | 0.034–0.041    | 0.08      | The round trip re-synthesizes *and* re-transcribes, so it samples noise twice. 2× the observed spread. |
+| `chrf`                     | 0.000          | 0.03      | chrF is in [0,1] here, not scaled to 100. |
+| `intent_accuracy`          | 0.000          | 0.05      | One record flipping in a 20-record set moves this by exactly 0.05. One flip is a coin toss; two is a pattern. |
+| `judge_adequacy` / `_fluency` | 0.05–0.10   | 0.5       | Half a rubric point is the smallest meaningful move a saturated integer judge can make. |
+| `judge_unparseable_rate`   | 0.05           | 0.1       | Gated on purpose: a judge that quietly stopped parsing is a *scorer outage*, and that is worse than a regression — it is a regression you can no longer see. Set at two records so one API hiccup cannot redden a build. |
+| `ttfb_p50` / `latency_p50` | 5–94 ms        | 150 ms    | Comfortably above the noise, well inside the 800ms end-to-end budget. |
+| `ttfb_p95`                 | up to 142 ms   | 300 ms    | Gated, but loosely — p95 at n=20 is the 19th of twenty samples and it knows it. |
+| `ttfb_p99`                 | **up to 732 ms** | **not gated** | p99 over 20 records is the maximum in disguise. It moved 732ms between two runs of *identical code*. Gating it would fail builds at random. |
+| `latency_p95` (wall)       | **up to 2.7 s** | **not gated** | Wall-clock p95 moved 2.7s between identical runs (TTS synthesizes a whole reply). `ttfb_p95` is the number that matters for voice anyway. |
+
+The ungated metrics are still reported and still charted against `LATENCY_BUDGET_MS` — the
+honest instrument for a tail at this sample size is the budget, not a run-over-run delta.
+They are listed in `NOT_GATED` *with* their reason, so "not gated" is a decision on the page
+rather than an absence somebody has to notice.
+
+**The config-hash rule.** If the two runs differ in `config_hash` or `golden_set_version`, the
+diff is stamped **NOT COMPARABLE** and does not fail the build. A metric that moved under a
+changed configuration may have moved *because of it*, and calling that a regression is a lie
+the harness would be telling on its own authority. The cost is stated rather than hidden: a PR
+that changes a prompt changes the config hash, so the gate cannot fail it. That is not a
+loophole to close — it is what a config hash means. Such a run needs a human to read the diff,
+which is what the banner is for.
+
 ## Online evals (later)
 
 Sample a small fraction of live traffic, run the judge asynchronously off the trace stream,

@@ -71,6 +71,70 @@ export async function insertTurn(event: TurnEvent): Promise<void> {
   );
 }
 
+export interface TraceRow {
+  trace_id: string;
+  session_id: string;
+  turn_index: number;
+  hop: Hop;
+  lang: string;
+  model: string;
+  mode: string | null;
+  input_ref: string | null;
+  output_ref: string | null;
+  text_in: string | null;
+  text_out: string | null;
+  latency_ms: number;
+  ttfb_ms: number | null;
+  config_hash: string;
+  git_sha: string;
+  ts: string;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface TurnRow {
+  trace_id: string;
+  session_id: string;
+  turn_index: number;
+  lang: string;
+  total_latency_ms: number;
+  first_audio_ms: number | null;
+  ok: boolean;
+  ts: string;
+}
+
+/**
+ * The turn list behind the trace drill-down. Turns are listed, not hops, because
+ * a turn is the unit a human debugs: "that call where it answered in the wrong
+ * language" is a turn, and its three hops are the explanation.
+ *
+ * Failed and cancelled turns are NOT filtered out. They are the most informative
+ * rows in the table (docs/EVAL_STRATEGY.md §6) and the dashboard's job is to make
+ * them easy to find, not to keep the list looking green.
+ */
+export async function listTurns(limit = 50): Promise<TurnRow[]> {
+  const { rows } = await db().query<TurnRow>(
+    `SELECT * FROM turns ORDER BY ts DESC LIMIT $1`,
+    [limit],
+  );
+  return rows;
+}
+
+/** Every hop of one turn, in pipeline order, with the refs the player resolves. */
+export async function traceDetail(
+  traceId: string,
+): Promise<{ turn: TurnRow | null; hops: TraceRow[] }> {
+  const [turn, hops] = await Promise.all([
+    db().query<TurnRow>(`SELECT * FROM turns WHERE trace_id = $1`, [traceId]),
+    db().query<TraceRow>(
+      `SELECT * FROM traces WHERE trace_id = $1
+       ORDER BY array_position(ARRAY['stt','llm','tts'], hop)`,
+      [traceId],
+    ),
+  ]);
+  return { turn: turn.rows[0] ?? null, hops: hops.rows };
+}
+
 export interface HopLatency {
   hop: Hop;
   lang: string;

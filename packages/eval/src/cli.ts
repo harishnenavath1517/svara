@@ -1,9 +1,11 @@
 import { closeDb, diffRuns, getRun, latestRun, pingDb, scoresFor } from "@svara/db";
+import { writeFile } from "node:fs/promises";
 import { HOPS, isLanguageCode } from "@svara/shared";
 import type { Hop, LanguageCode } from "@svara/shared";
 import { availableLanguages } from "./golden.js";
 import { formatConfusion } from "./intent.js";
 import { isImprovement } from "./metrics/direction.js";
+import { buildReport, toMarkdown } from "./report.js";
 import { runEval } from "./run.js";
 
 /**
@@ -15,7 +17,10 @@ import { runEval } from "./run.js";
  *   pnpm eval --against <run_id>       diff against a previous run
  *   pnpm eval --against latest         diff against the last scoring run
  *   pnpm eval --skip-judge             fast pass: skip the slow, expensive judge
- *   pnpm eval:report                   re-print the latest run
+ *   pnpm eval --fail-on-regression     exit non-zero if a gated metric regressed (CI)
+ *   pnpm eval:report                   diff the latest run vs its baseline, store the
+ *                                      verdict the dashboard reads, print markdown
+ *   pnpm eval:report --run <id> --against <id> --markdown <path>
  *
  * **This command exits non-zero unless it actually scored something**, and that is
  * the design, not a placeholder. A harness whose failure mode is "green and empty"
@@ -169,12 +174,68 @@ async function doRun(): Promise<void> {
   const against = flag("against");
   if (against !== null) await doDiff(against, summary.runId);
   else console.log(`\n[eval] diff a future run against this one with:\n  pnpm eval --against ${summary.runId}`);
+
+  // CI's entry point. The gate is deliberately the *last* thing a run does: the
+  // scores are already written and the report already stored, so a red build still
+  // leaves a run in the dashboard for someone to open and read. A gate that exits
+  // before it persists what it was angry about is a gate that cannot be argued with.
+  if (has("fail-on-regression")) await gate(summary.runId, against ?? "auto");
 }
 
+/**
+ * Stores the verdict, prints it, and decides the build.
+ *
+ * Note what does NOT fail here: an incomparable diff (different `config_hash` or
+ * `golden_set_version`). `summarize` owns that rule — a PR that changes a prompt
+ * changes the config hash, and a metric that moved under it may be a configuration
+ * change rather than a quality change. Failing the build on that would be the
+ * harness lying on its own authority. It is loudly labelled instead, and read by a
+ * human.
+ */
+async function gate(runId: string, baseRef: string): Promise<void> {
+  const report = await buildReport(runId, baseRef);
+  const markdownPath = flag("markdown");
+  const markdown = toMarkdown(report);
+  if (markdownPath !== null) await writeFile(markdownPath, markdown, "utf8");
+
+  const { summary } = report;
+  if (summary === null) {
+    console.log("\n[eval] no baseline — nothing to regress against. Build stays green.");
+    return;
+  }
+
+  if (!summary.comparable) {
+    console.log(`\n[eval] NOT COMPARABLE — ${summary.reasons.join(" ")}`);
+    console.log("[eval] the diff does not gate this build. Read it by hand.");
+    return;
+  }
+
+  if (summary.shouldFailBuild) {
+    console.error(`\n[eval] REGRESSION — ${summary.failures.length} metric(s) past threshold:`);
+    for (const f of summary.failures) {
+      console.error(
+        `  ${f.lang}  ${f.hop}/${f.metric}${f.slice === "all" ? "" : ` [${f.slice}]`}  ` +
+          `${fmtValue(f.before)} → ${fmtValue(f.after)}  (threshold ${f.threshold})`,
+      );
+    }
+    console.error("\n  Thresholds and why: packages/eval/src/metrics/regression.ts");
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log("\n[eval] no regression past threshold.");
+}
+
+/**
+ * `pnpm eval:report` — the command that gives the dashboard and CI a single verdict
+ * to agree on. It scores nothing and calls no model; it reads `eval_scores` and
+ * writes `eval_reports`, so it is cheap to re-run and safe to run anywhere.
+ */
 async function doReport(): Promise<void> {
   if (!(await pingDb())) die("Postgres unreachable. Run `pnpm infra:up` first.");
 
-  const run = await latestRun();
+  const requested = flag("run");
+  const run = requested === null ? await latestRun() : await getRun(requested);
   if (run === null) die("no scoring run found. Run `pnpm eval` first.");
 
   console.log(
@@ -186,6 +247,20 @@ async function doReport(): Promise<void> {
       `  started      ${run.started_at}`,
   );
   printScores(await scoresFor(run.run_id));
+
+  const report = await buildReport(run.run_id, flag("against") ?? "auto");
+  const markdownPath = flag("markdown");
+  if (markdownPath !== null) {
+    await writeFile(markdownPath, toMarkdown(report), "utf8");
+    console.log(`\n[eval] wrote ${markdownPath}`);
+  }
+
+  console.log(`\n${toMarkdown(report)}`);
+  console.log(`\n[eval] verdict stored. The dashboard reads it at /evals/${run.run_id}`);
+
+  if (has("fail-on-regression") && report.summary?.shouldFailBuild === true) {
+    process.exitCode = 1;
+  }
 }
 
 try {

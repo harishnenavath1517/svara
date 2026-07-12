@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import "./globals.css";
 
@@ -10,7 +11,14 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <nav>
+          <Link href="/">Call</Link>
+          <Link href="/evals">Eval runs</Link>
+          <Link href="/traces">Live traces</Link>
+        </nav>
+        {children}
+      </body>
     </html>
   );
 }

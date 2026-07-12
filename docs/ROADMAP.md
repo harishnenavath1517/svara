@@ -198,13 +198,41 @@ happens to line up, so both columns are meaningful there.
 
 ## Phase 3 — Regression dashboard (1–2 days)
 
-- [ ] `apps/web` dashboard: per-language metric tables, run-over-run deltas, latency budget
+- [x] `apps/web` dashboard: per-language metric tables, run-over-run deltas, latency budget
       vs actuals, trace drill-down (play the audio, read transcript + reply).
-- [ ] Highlight regressions (red/green deltas) between two runs.
-- [ ] `pnpm eval:report` refreshes dashboard data from the latest run.
-- [ ] Wire `pnpm eval` into CI; fail the build on a regression past a threshold.
+- [x] Highlight regressions (red/green deltas) between two runs.
+- [x] `pnpm eval:report` refreshes dashboard data from the latest run.
+- [x] Wire `pnpm eval` into CI; fail the build on a regression past a threshold.
 
 Exit: you can point at a run diff and name which hop/language moved and by how much.
+
+Done. `/evals` lists every run (including the ones that scored nothing — those stay visibly
+hollow); `/evals/<run>?against=<run>` is the diff. Four things the dashboard is built to
+refuse to do, because each of them is a way for it to lie:
+
+1. **It never shows `wer` without `wer_romanized`.** hi-IN code-mixed reads 0.234
+   script-sensitive and 0.021 script-invariant — worst slice and best slice, from the same
+   audio, from a transcription with no recognition errors. The gap gets its own column,
+   because the gap *is* the finding.
+2. **It never prints a judge mean without its `n` and its chrF agreement.** The judge is
+   saturated on hi-IN (19 of 19 scored records flat at 5.0), so its mean cannot fall no
+   matter how far quality degrades; the panel says so out loud, and renders a null
+   correlation as "not computed" rather than as a blank that reads like zero.
+3. **It never puts offline-eval and live-trace latency on one axis.** A live STT hop's wall
+   clock spans the caller *speaking*; the 5.2s in real traces is a human talking. TTFB
+   leads, wall time is greyed, and the live numbers stay on `/traces`.
+4. **It re-synthesizes nothing.** The drill-down plays the WAV the hop actually stored
+   (caller 16kHz, agent 24kHz), resolved from the trace row — `/api/audio` takes a trace id,
+   never a path, so there is nothing in the URL to traverse.
+
+CI: `.github/workflows/ci.yml`. `typecheck` + `test` on every PR; the eval gate replays the
+golden set through the real hops and fails on a regression past threshold. The thresholds are
+measured, not guessed, and the measurement is in `packages/eval/src/metrics/regression.ts` —
+including why `ttfb_p99` and wall `latency_p95` are reported but deliberately **not** gated
+(they moved 732ms and 2.7s between two runs of *identical code*; gating them would fail
+builds at random). And if two runs differ in `config_hash` or `golden_set_version`, the diff
+is stamped NOT COMPARABLE and does not fail the build: a metric that moved may be a
+configuration change rather than a quality change, and the harness does not get to guess.
 
 ## Phase 4 — Stretch (pick per target role)
 

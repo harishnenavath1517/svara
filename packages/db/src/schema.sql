@@ -109,3 +109,30 @@ CREATE TABLE IF NOT EXISTS eval_samples (
 );
 
 CREATE INDEX IF NOT EXISTS eval_samples_run_idx ON eval_samples (run_id, lang, hop);
+
+-- The verdict for one run against its baseline, written by `pnpm eval:report` and
+-- read by the dashboard's landing page and by CI.
+--
+-- This is a *projection*, like every other table here: `diffRuns` can recompute it
+-- from eval_scores at any time, and the report command does exactly that. It is
+-- stored rather than recomputed on page load for one reason that is not
+-- performance — the dashboard and CI must agree on which run is the baseline. If
+-- the page picked a baseline itself, the number on screen and the number that
+-- failed the build could disagree, and the harness would be arguing with itself.
+CREATE TABLE IF NOT EXISTS eval_reports (
+  run_id       UUID        PRIMARY KEY REFERENCES eval_runs (run_id) ON DELETE CASCADE,
+  -- Null when there is nothing to diff against: the first run ever, or the first
+  -- under a new golden set. A report with no baseline is honest; a report that
+  -- silently diffed against an incomparable run is not.
+  base_run_id  UUID        REFERENCES eval_runs (run_id) ON DELETE SET NULL,
+  generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- False when config_hash or golden_set_version differ across the two runs. A
+  -- moved metric is then a configuration change until proven otherwise, and
+  -- `regressions` below must NOT be read as a quality claim.
+  comparable   BOOLEAN     NOT NULL,
+  -- Why not, in words, for the humans. Empty when comparable.
+  notes        TEXT,
+  -- The full delta list + threshold verdicts. JSONB because the shape follows the
+  -- metric set, and the metric set is meant to grow without a migration.
+  summary      JSONB       NOT NULL
+);

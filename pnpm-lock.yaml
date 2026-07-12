@@ -84,6 +84,12 @@ importers:
 
   apps/web:
     dependencies:
+      '@svara/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@svara/eval':
+        specifier: workspace:*
+        version: link:../../packages/eval
       '@svara/shared':
         specifier: workspace:*
         version: link:../../packages/shared

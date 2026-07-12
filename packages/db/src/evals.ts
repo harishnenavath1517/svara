@@ -124,12 +124,136 @@ export async function getRun(runId: string): Promise<EvalRunRow | null> {
   return rows[0] ?? null;
 }
 
+/**
+ * The dashboard's run picker. Hollow runs are included on purpose — a run that
+ * scored nothing is a fact about the harness, and hiding it from the list is how
+ * you end up believing the last run passed when it never ran.
+ */
+export async function listRuns(limit = 25): Promise<EvalRunRow[]> {
+  const { rows } = await db().query<EvalRunRow>(
+    `SELECT * FROM eval_runs ORDER BY started_at DESC LIMIT $1`,
+    [limit],
+  );
+  return rows;
+}
+
+/**
+ * The default baseline: the previous run that actually scored something.
+ *
+ * Deliberately *not* filtered to a matching config_hash. Diffing only against a
+ * run with the same configuration would mean the run that changed the
+ * configuration — the exact run you most want to look at — silently has no
+ * baseline at all. It gets one, and the diff is stamped "not comparable" instead
+ * (see `comparability` in packages/eval).
+ */
+export async function previousRun(runId: string): Promise<EvalRunRow | null> {
+  const { rows } = await db().query<EvalRunRow>(
+    `SELECT prev.* FROM eval_runs prev, eval_runs cur
+     WHERE cur.run_id = $1
+       AND prev.started_at < cur.started_at
+       AND prev.records_scored > 0
+     ORDER BY prev.started_at DESC
+     LIMIT 1`,
+    [runId],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * The most recent scoring run at a given commit.
+ *
+ * This is how CI finds its baseline. "The previous run" is the wrong question on a
+ * pull request: the previous row in the table might be another PR's run, and then
+ * a branch gets gated against a branch. What a PR wants to know is "did *my*
+ * change move anything against `main`", so CI resolves `origin/main`'s sha and
+ * diffs against the run recorded at it.
+ */
+export async function runForGitSha(gitSha: string): Promise<EvalRunRow | null> {
+  const { rows } = await db().query<EvalRunRow>(
+    `SELECT * FROM eval_runs
+     WHERE git_sha = $1 AND records_scored > 0
+     ORDER BY started_at DESC LIMIT 1`,
+    [gitSha],
+  );
+  return rows[0] ?? null;
+}
+
 export async function scoresFor(runId: string): Promise<EvalScoreRow[]> {
   const { rows } = await db().query<EvalScoreRow>(
     `SELECT * FROM eval_scores WHERE run_id = $1 ORDER BY hop, lang, metric, slice`,
     [runId],
   );
   return rows;
+}
+
+/**
+ * The per-record detail behind an aggregate. This is what turns "hi-IN code-mixed
+ * WER is 0.234" into "…because Saaras wrote आधार कार्ड and the reference says
+ * Aadhaar card" — the drill-down is the difference between a number you can act
+ * on and one you can only worry about.
+ */
+export async function samplesFor(
+  runId: string,
+  filter: { lang?: string; hop?: string; metric?: string } = {},
+): Promise<EvalSampleRow[]> {
+  const { rows } = await db().query<EvalSampleRow>(
+    `SELECT * FROM eval_samples
+     WHERE run_id = $1
+       AND ($2::text IS NULL OR lang = $2)
+       AND ($3::text IS NULL OR hop = $3)
+       AND ($4::text IS NULL OR metric = $4)
+     ORDER BY value DESC NULLS FIRST, record_id`,
+    [runId, filter.lang ?? null, filter.hop ?? null, filter.metric ?? null],
+  );
+  return rows;
+}
+
+export interface EvalReportRow {
+  run_id: string;
+  base_run_id: string | null;
+  generated_at: string;
+  comparable: boolean;
+  notes: string | null;
+  summary: unknown;
+}
+
+/** Written by `pnpm eval:report` (and by CI). Overwrites: a run has one verdict. */
+export async function saveReport(
+  report: Omit<EvalReportRow, "generated_at">,
+): Promise<void> {
+  await db().query(
+    `INSERT INTO eval_reports (run_id, base_run_id, comparable, notes, summary)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (run_id) DO UPDATE
+       SET base_run_id = EXCLUDED.base_run_id,
+           generated_at = now(),
+           comparable = EXCLUDED.comparable,
+           notes = EXCLUDED.notes,
+           summary = EXCLUDED.summary`,
+    [
+      report.run_id,
+      report.base_run_id,
+      report.comparable,
+      report.notes,
+      JSON.stringify(report.summary),
+    ],
+  );
+}
+
+export async function reportFor(runId: string): Promise<EvalReportRow | null> {
+  const { rows } = await db().query<EvalReportRow>(
+    `SELECT * FROM eval_reports WHERE run_id = $1`,
+    [runId],
+  );
+  return rows[0] ?? null;
+}
+
+/** The dashboard's landing verdict: the most recently generated report. */
+export async function latestReport(): Promise<EvalReportRow | null> {
+  const { rows } = await db().query<EvalReportRow>(
+    `SELECT * FROM eval_reports ORDER BY generated_at DESC LIMIT 1`,
+  );
+  return rows[0] ?? null;
 }
 
 export interface ScoreDelta {

@@ -5,7 +5,12 @@ import type { NextConfig } from "next";
  * them (see CLAUDE.md). Next transpiles them itself.
  */
 const config: NextConfig = {
-  transpilePackages: ["@svara/shared"],
+  transpilePackages: ["@svara/shared", "@svara/db", "@svara/eval"],
+
+  // `pg` is a Node driver with dynamic requires; bundling it breaks it. The
+  // dashboard's pages are server components that query Postgres directly, so it
+  // has to stay a real Node import.
+  serverExternalPackages: ["pg"],
 
   webpack(config) {
     // `@svara/shared` is ESM TypeScript: its internal imports say "./trace.js",

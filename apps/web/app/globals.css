@@ -113,3 +113,283 @@ button:disabled {
 .error {
   color: var(--danger);
 }
+
+/* ---------- dashboard ---------- */
+
+nav {
+  display: flex;
+  gap: 20px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+nav a:hover {
+  color: var(--text);
+}
+
+a {
+  color: var(--accent);
+}
+
+main.wide {
+  max-width: 1180px;
+}
+
+h2 {
+  font-size: 18px;
+  margin: 32px 0 12px;
+}
+
+h3 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.crumb {
+  margin: 0 0 16px;
+  font-size: 13px;
+}
+
+.crumb a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.panel-head {
+  margin-bottom: 12px;
+}
+
+/* A note is never decoration here: it is usually the sentence that stops the
+   number above it from being misread. */
+.note {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 6px 0 0;
+}
+
+.finding {
+  border-left: 3px solid var(--accent);
+  background: #5eead40d;
+  padding: 10px 14px;
+  margin: 12px 0 0;
+  font-size: 13px;
+  border-radius: 0 6px 6px 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #ffffff0a;
+  vertical-align: top;
+}
+
+td.num,
+th.num {
+  text-align: right;
+}
+
+td.text {
+  max-width: 320px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+code {
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.92em;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.good {
+  color: var(--accent);
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tag.bad {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.pill {
+  font-size: 12px;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+/* The `all` slice is the headline; the per-slice rows below it are the argument. */
+.row-all td {
+  font-weight: 600;
+}
+
+/* The wer / wer_romanized divergence. Highlighted because the gap IS the finding —
+   a reader who sees only the first column goes off to fix a model that works. */
+.gap-notable {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.row-fail td {
+  background: #f871711a;
+}
+
+.row-schema td {
+  background: #fbbf2412;
+}
+
+/* A run that scored nothing must never look like a run that passed. */
+.row-hollow td {
+  background: #f871710f;
+  color: var(--muted);
+}
+
+.verdict {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.verdict.regressed_past_threshold {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.verdict.regressed,
+.verdict.ungated {
+  color: #fbbf24;
+}
+
+.verdict.improved {
+  color: var(--accent);
+}
+
+.verdict.appeared,
+.verdict.disappeared {
+  color: #fbbf24;
+}
+
+.verdict.flat {
+  color: var(--muted);
+}
+
+.verdict-banner {
+  border-left: 3px solid var(--line);
+}
+
+.verdict-banner.ok {
+  border-left-color: var(--accent);
+}
+
+.verdict-banner.warn {
+  border-left-color: #fbbf24;
+}
+
+.verdict-banner.bad {
+  border-left-color: var(--danger);
+}
+
+.reasons {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.reasons li {
+  margin-bottom: 4px;
+}
+
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  margin-bottom: 14px;
+}
+
+.stat-value {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* n is not decoration. A mean without its sample size is a claim without evidence —
+   4.95 over an unstated n is exactly how a saturated judge gets sold as quality. */
+.stat-n {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.lang-section {
+  margin-bottom: 40px;
+}
+
+.rationale {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.rationale summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.rationale p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.audio-row {
+  margin-top: 12px;
+}
+
+.audio-row audio {
+  width: 100%;
+  max-width: 420px;
+  height: 34px;
+}
+
+.active {
+  font-weight: 700;
+}
