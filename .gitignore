@@ -15,7 +15,14 @@ build/
 *.tsbuildinfo
 
 # eval artifacts
-evals/golden/audio/
+# NOT ignored: evals/golden/audio/ is COMMITTED (~4.7MB).
+#
+# Phase 0 ignored it, before there was any audio and before we knew what it was for.
+# That was wrong. The WAVs are the answer key: Bulbul is not bit-reproducible, so a fresh
+# clone that regenerated them would get subtly different audio, every WER would move, and
+# runs would stop being comparable across machines and across time. A golden set you have
+# to re-synthesize is not golden. It is also what makes `pnpm eval` work on a clean
+# checkout without spending a single API call.
 eval-runs/
 *.local
 
@@ -27,3 +34,6 @@ eval-runs/
 
 # logs
 *.log
+
+# Audio blobs referenced by traces (input_ref/output_ref). Local; not source.
+.svara-storage/

@@ -9,3 +9,6 @@ catalog:
   "@types/node": ^22.18.0
   tsx: ^4.20.6
   vitest: ^3.2.4
+  kafkajs: ^2.2.4
+  pg: ^8.13.1
+  "@types/pg": ^8.11.10

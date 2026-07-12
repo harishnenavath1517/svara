@@ -9,9 +9,12 @@
   },
   "scripts": {
     "dev": "pnpm -r --parallel run dev",
-    "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait && docker compose -f infra/docker-compose.yml run --rm redpanda-init",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait && docker compose -f infra/docker-compose.yml run --rm redpanda-init && pnpm db:migrate",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
     "infra:logs": "docker compose -f infra/docker-compose.yml logs -f",
+    "db:migrate": "pnpm --filter @svara/db run migrate",
+    "sink": "pnpm --filter @svara/sink run start",
+    "golden:build": "pnpm --filter @svara/eval run golden:build",
     "eval": "pnpm --filter @svara/eval run start",
     "eval:report": "pnpm --filter @svara/eval run report",
     "typecheck": "pnpm -r run typecheck",

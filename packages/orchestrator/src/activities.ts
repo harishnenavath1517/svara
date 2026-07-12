@@ -6,6 +6,7 @@ import {
   sentences as toSentences,
   synthesize as ttsSynthesize,
   transcribe as sttTranscribe,
+  TTS_SAMPLE_RATE,
 } from "@svara/sarvam";
 import { MODELS, isLanguageCode, optionalEnv } from "@svara/shared";
 import type {
@@ -20,10 +21,14 @@ import type {
   TranscribeOutput,
   TurnContext,
 } from "@svara/shared";
+import { AudioTee, audioCaptureEnabled } from "./audio-capture.js";
 import { disposeTurnBus, turnBus } from "./bus.js";
 import { SYSTEM_PROMPT } from "./config.js";
 import { gatewayChannel } from "./gateway-channel.js";
 import { emitTrace, toTraceError } from "./trace.js";
+
+/** What the gateway captures from the caller's mic, and what Saaras expects. */
+const CALLER_SAMPLE_RATE = 16000;
 
 /**
  * The three hops, as Temporal activities. Each one:
@@ -79,9 +84,13 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeOutp
   let text = "";
   let lang: TraceLanguage = input.lang;
 
+  // Tees the caller's audio on its way to Saaras. Passive: it never holds a frame
+  // back, and the WAV is only written once the utterance has already ended.
+  const tee = new AudioTee(audioCaptureEnabled());
+
   try {
     const stream = sttTranscribe(
-      channel.audioStream(ctx.trace_id),
+      tee.tap(channel.audioStream(ctx.trace_id)),
       { lang: input.lang, mode: input.mode, signal: hopSignal(ctx.trace_id) },
       config,
     );
@@ -106,25 +115,38 @@ export async function transcribe(input: TranscribeInput): Promise<TranscribeOutp
     bus.lang.resolve(isLanguageCode(lang) ? lang : DEFAULT_LANGUAGE);
     bus.transcripts.close();
 
+    // Stop the clock BEFORE the blob write. Reading Date.now() after the await
+    // would charge the disk write to the model and quietly corrupt every STT
+    // latency percentile in the harness.
+    const latency = Date.now() - startedAt;
+    const inputRef = await tee.store(ctx.session_id, ctx.trace_id, "stt", "in", CALLER_SAMPLE_RATE);
+
     emitTrace(ctx, {
       hop: "stt",
       lang,
       model: MODELS.stt,
       mode: input.mode,
+      input_ref: inputRef,
       text_out: text,
-      latency_ms: Date.now() - startedAt,
+      latency_ms: latency,
       ttfb_ms: ttfb,
     });
     return { text, lang };
   } catch (err) {
+    const latency = Date.now() - startedAt;
     bus.transcripts.fail(err);
+    // Store what we heard even on failure: the audio behind a failed
+    // transcription is the single most useful row in the eval set.
+    const inputRef = await tee.store(ctx.session_id, ctx.trace_id, "stt", "in", CALLER_SAMPLE_RATE);
+
     emitTrace(ctx, {
       hop: "stt",
       lang,
       model: MODELS.stt,
       mode: input.mode,
+      input_ref: inputRef,
       text_out: text.length > 0 ? text : null,
-      latency_ms: Date.now() - startedAt,
+      latency_ms: latency,
       ttfb_ms: ttfb,
       error: toTraceError(err),
     });
@@ -148,17 +170,63 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
   const channel = gatewayChannel();
   const activity = Context.current();
 
-  let prompt = "";
-  for await (const transcript of bus.transcripts.subscribe()) {
-    activity.heartbeat();
-    prompt = transcript.text;
-    if (transcript.isFinal) break;
-  }
-
-  const lang = await bus.lang.promise;
-  const startedAt = Date.now();
+  // Two clocks, and the distinction is the whole point of `ttfb_ms`.
+  //
+  //   waitStartedAt — activity start, i.e. how long this hop was ALIVE, including
+  //                   the time it sat blocked waiting for STT to finalize.
+  //   genStartedAt  — when the model was actually asked for a token.
+  //
+  // The LLM's latency and TTFB are measured from the second one. Measuring them
+  // from the first would fold the caller's speaking time into "LLM latency" and
+  // make the model look ten times slower than it is — the exact mistake the live
+  // STT traces make, and the reason docs/EVAL_STRATEGY.md warns about it.
+  const waitStartedAt = Date.now();
+  let genStartedAt = waitStartedAt;
   let ttfb: number | null = null;
   let reply = "";
+  let prompt = "";
+  let lang: LanguageCode = DEFAULT_LANGUAGE;
+
+  /**
+   * Waiting for STT is INSIDE the try, and that is a deliberate fix, not a
+   * refactor. It used to sit above it — which meant that if this hop failed or
+   * stalled *here*, waiting for a transcript that never came, it emitted **no
+   * trace at all**: no error, no latency, nothing. The turn simply vanished from
+   * the eval plane, and guardrail 4 ("every hop emits a trace, even on failure")
+   * was quietly false for one of the likeliest ways this hop can fail.
+   *
+   * Found while chasing a turn that hung after STT: the traces said the LLM hop
+   * had never existed, which made the failure impossible to localise. The hang
+   * turned out to be a stale gateway holding the port, not a bug in here — but a
+   * blind spot that can hide a real hop failure is worth closing regardless of
+   * what put us in front of it.
+   */
+  try {
+    for await (const transcript of bus.transcripts.subscribe()) {
+      activity.heartbeat();
+      prompt = transcript.text;
+      if (transcript.isFinal) break;
+    }
+    lang = await bus.lang.promise;
+    genStartedAt = Date.now();
+  } catch (err) {
+    bus.sentences.fail(err);
+    emitTrace(ctx, {
+      hop: "llm",
+      lang,
+      model: optionalEnv("LLM_MODEL", MODELS.llm),
+      mode: null,
+      text_in: null,
+      text_out: null,
+      // The hop never reached the model, so this is time spent waiting, not
+      // generating. `stalled_before_llm` says exactly that rather than blaming
+      // sarvam-30b for a turn it was never asked to answer.
+      latency_ms: Date.now() - waitStartedAt,
+      ttfb_ms: null,
+      error: toTraceError(err),
+    });
+    return rethrow(ctx.trace_id, err);
+  }
 
   if (prompt.trim().length === 0) {
     // Nothing intelligible — say so rather than prompting the model with "".
@@ -185,7 +253,7 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
   try {
     const tokens = chat(messages, { signal: hopSignal(ctx.trace_id) }, config);
     for await (const sentence of toSentences(tokens)) {
-      ttfb ??= Date.now() - startedAt;
+      ttfb ??= Date.now() - genStartedAt;
       activity.heartbeat();
       reply = reply.length === 0 ? sentence : `${reply} ${sentence}`;
       bus.sentences.push(sentence);
@@ -209,7 +277,7 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
       text_in: prompt,
       text_out: reply,
       rag_context_ids: [],
-      latency_ms: Date.now() - startedAt,
+      latency_ms: Date.now() - genStartedAt,
       ttfb_ms: ttfb,
     });
     return { text: reply, lang, ragContextIds: [] };
@@ -223,7 +291,7 @@ export async function respond(input: RespondInput): Promise<RespondOutput> {
       text_in: prompt,
       text_out: reply.length > 0 ? reply : null,
       rag_context_ids: [],
-      latency_ms: Date.now() - startedAt,
+      latency_ms: Date.now() - genStartedAt,
       ttfb_ms: ttfb,
       error: toTraceError(err),
     });
@@ -250,6 +318,8 @@ export async function synthesize(input: SynthesizeInput): Promise<SynthesizeOutp
   let bytes = 0;
   let spoken = "";
 
+  const tee = new AudioTee(audioCaptureEnabled());
+
   try {
     const sentences = (async function* () {
       for await (const sentence of bus.sentences.subscribe()) {
@@ -273,13 +343,19 @@ export async function synthesize(input: SynthesizeInput): Promise<SynthesizeOutp
       activity.heartbeat();
       chunks += 1;
       bytes += chunk.byteLength;
+      // Forward to the caller FIRST, capture second. The recorder never sits
+      // between Bulbul and the person waiting to hear the answer.
       channel.send({
         t: "tts_audio",
         trace_id: ctx.trace_id,
         session_id: ctx.session_id,
         b64: Buffer.from(chunk).toString("base64"),
       });
+      tee.push(chunk);
     }
+
+    const latency = Date.now() - startedAt;
+    const outputRef = await tee.store(ctx.session_id, ctx.trace_id, "tts", "out", TTS_SAMPLE_RATE);
 
     emitTrace(ctx, {
       hop: "tts",
@@ -287,18 +363,25 @@ export async function synthesize(input: SynthesizeInput): Promise<SynthesizeOutp
       model: MODELS.tts,
       mode: null,
       text_in: spoken,
-      latency_ms: Date.now() - startedAt,
+      output_ref: outputRef,
+      latency_ms: latency,
       ttfb_ms: ttfb,
     });
     return { chunks, bytes, ttfb_ms: ttfb };
   } catch (err) {
+    const latency = Date.now() - startedAt;
+    // On barge-in this keeps the audio the caller actually heard before they cut
+    // in — which is the entire evidence base for "why did they interrupt?".
+    const outputRef = await tee.store(ctx.session_id, ctx.trace_id, "tts", "out", TTS_SAMPLE_RATE);
+
     emitTrace(ctx, {
       hop: "tts",
       lang,
       model: MODELS.tts,
       mode: null,
       text_in: spoken.length > 0 ? spoken : null,
-      latency_ms: Date.now() - startedAt,
+      output_ref: outputRef,
+      latency_ms: latency,
       ttfb_ms: ttfb,
       error: toTraceError(err),
     });
