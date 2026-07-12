@@ -59,35 +59,60 @@ evals/golden/   Golden dataset: audio + labels, per language
 docs/           Architecture, eval strategy, API ref, roadmap, data contracts
 ```
 
-Build packages before apps; `shared` has no internal deps and everything imports it.
+`shared` has no internal deps and everything imports it.
+
+There is **no build step for internal packages**. They resolve straight to TypeScript source
+(`"main": "./src/index.ts"`), and apps transpile them (`tsx` for gateway/worker,
+`transpilePackages` for Next). Don't add a `dist`/`tsc -b` pipeline — there's nothing to
+build and nothing to go stale.
 
 ## Commands
 
 ```bash
 pnpm install
-pnpm infra:up          # docker-compose up: redpanda, temporal, qdrant
+pnpm infra:up          # docker-compose up + create svara.traces / svara.turns topics
+pnpm infra:down
 pnpm dev               # web + gateway + temporal worker in parallel
 pnpm eval              # run the offline eval harness against the golden set
 pnpm eval:report       # write/refresh dashboard data from the latest run
 pnpm typecheck && pnpm test
 ```
 
-(Define these scripts in the root `package.json` as you scaffold each package.)
+Local ports (from `infra/docker-compose.yml`): Redpanda **19092** (9092 is in-network only —
+`REDPANDA_BROKERS` must say 19092), Redpanda Console 8080, Temporal 7233, Temporal UI 8233,
+Qdrant 6333, Postgres 5432.
+
+Two of these don't do the full job yet, on purpose: `pnpm dev` only starts what exists (the
+Next app lands in Phase 1), and `pnpm eval` exits non-zero until Phase 2 — a green eval run
+that scored nothing is worse than no eval run. Don't "fix" either by making it exit 0.
 
 ## Guardrails — these are not optional
 
 1. **Sarvam models.** Use `saaras:v3` and `bulbul:v3` ONLY. `saarika:v1/v2/flash` and
-   `bulbul:v1` are DEPRECATED and will fail. When unsure about any Sarvam endpoint,
-   param, or model, pull the current spec from `https://docs.sarvam.ai/llms-full.txt`
-   (append `/llms.txt` to any Sarvam docs URL for a page index). Do not invent params.
-2. **Never commit secrets.** `SARVAM_API_KEY` lives in `.env` (git-ignored). Read it from
-   `process.env`. Never hardcode it, never log it, never put it in a URL query string.
+   `bulbul:v1` are DEPRECATED and will fail. Model ids, STT modes, and language codes are
+   pinned in `packages/shared` (`MODELS`, `STT_MODES`, `SPEECH_LANGUAGES`) — import them,
+   don't retype string literals. When unsure about any Sarvam endpoint, param, or model,
+   pull the current spec from `https://docs.sarvam.ai/llms-full.txt` (append `/llms.txt` to
+   any Sarvam docs URL for a page index). Do not invent params.
+2. **Never commit secrets.** `SARVAM_API_KEY` lives in `.env` (git-ignored); `.env.example`
+   carries a placeholder and is committed, so never paste a real key into it. Read the key
+   via `sarvamApiKey()` from `packages/shared`, which returns a `Secret` — it redacts itself
+   in logs, `JSON.stringify`, and template literals, and yields the raw value only from an
+   explicit `.reveal()` at the call site that sets the `api-subscription-key` header. Don't
+   reach for `process.env.SARVAM_API_KEY` directly; that's how it ends up in a log line.
+   Never put the key in a URL query string.
 3. **Stream every hop.** Do not buffer a full transcript before calling the LLM, or a full
    LLM response before calling TTS. Partial transcript → LLM, first sentence → TTS. The
-   <800ms first-audio budget is unreachable otherwise.
+   <800ms first-audio budget is unreachable otherwise. Two things that budget depends on and
+   that look like noise if you don't know: `sarvam-30b` **reasons by default**, and its
+   thinking tokens are billed against `max_tokens` *before* any reply — at 512 tokens you get
+   an empty reply and no error. The `thinking: false` default in `packages/sarvam`'s `chat()`
+   is what turns it off; don't remove it. And **barge-in cannot ride on Temporal
+   cancellation** (heartbeat-throttled, seconds late) — the gateway aborts the hops in-band.
 4. **Every hop emits a trace event** to Redpanda (`svara.traces`) with the schema in
-   `docs/DATA_CONTRACTS.md`. The eval plane is dead without this. Treat a missing trace
-   as a bug, not an optimization.
+   `docs/DATA_CONTRACTS.md`, typed as `TraceEvent` in `packages/shared`. Emit on failure too
+   (set `error`, still record `latency_ms`) — failed turns are the most valuable eval data.
+   The eval plane is dead without this. Treat a missing trace as a bug, not an optimization.
 5. **Barge-in is a P0 feature**, not polish. The gateway must cancel in-flight TTS the
    moment VAD detects the user speaking.
 6. **Temporal owns the turn.** STT/LLM/TTS are activities with per-hop timeouts and

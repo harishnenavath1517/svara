@@ -4,14 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "echo '@svara/web: Next.js app is scaffolded in Phase 1 (see docs/ROADMAP.md)'",
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@svara/shared": "workspace:*"
+    "@svara/shared": "workspace:*",
+    "next": "^15.5.4",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
     "typescript": "catalog:"
   }
 }

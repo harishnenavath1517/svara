@@ -9,13 +9,17 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@svara/shared": "workspace:*"
+    "@svara/shared": "workspace:*",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "typescript": "catalog:"
+    "@types/ws": "^8.18.1",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

@@ -12,6 +12,7 @@ dist/
 .next/
 out/
 build/
+*.tsbuildinfo
 
 # eval artifacts
 evals/golden/audio/

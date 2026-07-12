@@ -9,14 +9,24 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/worker.ts",
+    "start": "tsx --env-file=../../.env src/worker.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@svara/sarvam": "workspace:*",
-    "@svara/shared": "workspace:*"
+    "@svara/shared": "workspace:*",
+    "@temporalio/activity": "^1.11.8",
+    "@temporalio/client": "^1.11.8",
+    "@temporalio/worker": "^1.11.8",
+    "@temporalio/workflow": "^1.11.8",
+    "kafkajs": "^2.2.4",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@types/ws": "^8.18.1",
+    "tsx": "catalog:",
     "typescript": "catalog:"
   }
 }

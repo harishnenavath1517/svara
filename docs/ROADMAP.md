@@ -47,18 +47,58 @@ Phase 0 notes:
 
 ## Phase 1 — The voice loop (the demo) (2–3 days)
 
-- [ ] `packages/sarvam`: typed client for `/speech-to-text` (WS), `/text-to-speech` (stream),
+- [x] `packages/sarvam`: typed client for `/speech-to-text` (WS), `/text-to-speech` (WS),
       `/chat/completions`. Streaming helpers. Uses `saaras:v3` / `bulbul:v3` only.
-- [ ] `apps/gateway`: WebSocket server; accept mic audio; **VAD**; **barge-in** (cancel
+- [x] `apps/gateway`: WebSocket server; accept mic audio; **VAD**; **barge-in** (cancel
       in-flight TTS on user speech); session state keyed by `session_id`.
-- [ ] `packages/orchestrator`: Temporal turn workflow with `transcribe → respond →
+- [x] `packages/orchestrator`: Temporal turn workflow with `transcribe → respond →
       synthesize` activities, per-hop timeouts + retries.
-- [ ] Pipeline the hops: partial transcript → LLM; first LLM sentence → TTS.
-- [ ] `apps/web`: minimal call UI — connect, mic capture, audio playback, live transcript.
-- [ ] Barge-in verified end to end (speak over the agent, it stops).
+- [x] Pipeline the hops: first LLM sentence → TTS.
+- [x] `apps/web`: minimal call UI — connect, mic capture, audio playback, live transcript.
+- [x] Barge-in verified end to end (speak over the agent, it stops).
 
 Exit: speak in Hindi + one South-Indian language, get a coherent spoken reply, first audio
 under ~1s locally. Record a screen capture — this is the shareable demo.
+
+**Met, with one number to keep honest.** Driven end to end with synthesized caller audio
+(Bulbul → gateway → Saaras → sarvam-30b → Bulbul → back), in both required languages:
+
+| Turn | Transcript | Reply | First audio |
+|------|-----------|-------|-------------|
+| Hindi | "नमस्ते मुझे PM किसान योजना के लिए पात्रता जाननी है" | 2 sentences, 9.0s of speech | **860 ms** |
+| Tamil | "வணக்கம் எனக்கு PM Kisan திட்டத்திற்கான தகுதி தெரிய வேண்டும்" | 2 sentences, 10.4s of speech | **799 ms** |
+
+against a 800ms budget from mic close. Barge-in verified: the caller talks over the agent,
+playback stops ~300ms later, the hops abort mid-call (TTS at 980ms instead of running 6.7s
+to completion), the turn traces `error: {code: "cancelled"}`, and zero stale audio chunks
+arrive after the stop.
+
+Phase 1 notes — read these before touching a hop:
+
+- **Where the streams live.** Temporal activities take serializable arguments and return
+  serializable results; they cannot be handed a live microphone. So the gateway is the
+  stream broker and Temporal is the control plane: audio and hop output ride an internal
+  WebSocket between the gateway and the worker, while the workflow owns the turn's
+  timeouts, retries, and cancellation. The three hops run *concurrently* and hand off
+  through an in-worker turn bus. See `packages/orchestrator/src/protocol.ts` and `bus.ts`.
+- **Barge-in cannot ride on Temporal cancellation.** Temporal delivers cancellation to an
+  activity only in the response to a heartbeat, and heartbeats are throttled to ~80% of
+  `heartbeatTimeout`. Measured: a cancelled turn's TTS kept streaming for five more
+  seconds — silent to the caller, but still billing. The gateway now sends an in-band
+  `cancel` frame that aborts the hops' sockets in the worker immediately; Temporal
+  cancellation runs behind it for the workflow's own bookkeeping.
+- **sarvam-30b thinks by default, and it will eat your whole turn.** Its reasoning tokens
+  are billed against `max_tokens` and stream *before* any reply. At `max_tokens: 512` it
+  never reaches a first word: empty reply, `finish_reason: "length"`, no error anywhere.
+  `reasoning_effort` does not turn it off. `extra_body.chat_template_kwargs.enable_thinking
+  = false` does: 0 reasoning tokens, ~340ms to first word. See `packages/sarvam/src/chat.ts`.
+- **The 860ms is STT's, not ours.** Saaras only emits a transcript after the `flush` that
+  the VAD endpoint triggers — no interim partials arrived on the WS. LLM (~450ms TTFT) and
+  TTS (~500ms to first chunk) are inside budget; the STT finalize is the gap. Feeding
+  partial transcripts to the LLM is worth revisiting when Saaras streams them.
+- **The VAD is energy + hysteresis**, not a neural model — it runs in microseconds and
+  barge-in latency is dominated by cancelling TTS, not by detection. Swap in Silero behind
+  the same interface if a demo room is noisy.
 
 ## Phase 2 — Traces & the eval harness (the differentiator) (2–3 days)
 

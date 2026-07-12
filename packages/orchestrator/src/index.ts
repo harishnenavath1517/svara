@@ -1,21 +1,13 @@
-import { LATENCY_BUDGET_MS } from "@svara/shared";
-
 /**
- * Temporal turn workflow + activities: transcribe -> respond -> synthesize.
- * Built in Phase 1; see docs/ROADMAP.md and docs/ARCHITECTURE.md.
+ * Public surface of the orchestrator — what the gateway imports.
  *
- * The hops are activities with per-hop timeouts and retries set in these
- * options — not bare awaits inside the workflow (guardrail 6 in CLAUDE.md).
- * A hung LLM then times out into a filler instead of dead air, and barge-in
- * cancels the whole saga cleanly.
- *
- * Start-to-close is set well above the budget: the budget is what we hold the
- * pipeline to in eval, the timeout is when we give up on a call.
+ * Deliberately does NOT export `workflows.ts` or `activities.ts`: workflow code
+ * only runs inside the Temporal sandbox (`proxyActivities` at module scope
+ * throws anywhere else), and the activities pull in the Sarvam client. The
+ * worker imports those two directly.
  */
-export const ACTIVITY_TIMEOUTS_MS = {
-  transcribe: LATENCY_BUDGET_MS.stt * 20,
-  respond: LATENCY_BUDGET_MS.llm * 20,
-  synthesize: LATENCY_BUDGET_MS.tts * 20,
-} as const;
-
-export const TASK_QUEUE = "svara-turns";
+export * from "./client.js";
+export * from "./config.js";
+export * from "./protocol.js";
+export * from "./trace.js";
+export * from "./turn.js";

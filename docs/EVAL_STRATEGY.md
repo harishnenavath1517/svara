@@ -50,6 +50,29 @@ harness with the same care as the runtime loop.
 - Per-hop **p50 / p95 / p99** and end-to-end first-audio latency, per language.
 - Track against the budget in `ARCHITECTURE.md`. A latency regression is a quality
   regression for voice.
+- The trace event already carries what you need: `latency_ms` (wall time for the hop) and
+  `ttfb_ms` (time to first token/chunk on the streaming hops). For a voice agent **`ttfb_ms`
+  is the number that matters** — a TTS hop that takes 6s but starts speaking in 500ms is a
+  good turn; the reverse is a dead call. Report both, lead with TTFB.
+- End-to-end first audio is measured **mic close → first audio at the caller** and is
+  emitted on `svara.turns` as `first_audio_ms`. Phase 1 measured 860ms (Hindi) and 799ms
+  (Tamil) against a 800ms budget — a two-turn sample, which is exactly why this belongs in
+  a harness and not in a README claim.
+- **Know what you're actually measuring.** In Phase 1 the whole overshoot was the Saaras
+  finalize: no interim partials arrive on the STT socket, so the transcript only lands after
+  the `flush` that the VAD endpoint triggers. A latency regression here could just as easily
+  be a VAD-hangover change as a model change — per-hop TTFB is what tells them apart.
+
+### 6. Failed and cancelled turns
+
+Every hop traces on failure too (`error: {code, message}`), including barge-in
+(`code: "cancelled"`). Do not filter these out of the eval set — they are the most
+informative rows in it:
+
+- A rising **cancelled** rate means callers are interrupting the agent, which usually means
+  it is too slow or too verbose. That is a quality signal no WER will show you.
+- A rising **`empty_transcript`** rate means VAD is firing on noise.
+- A hop that fails and traces `latency_ms` still tells you *where* the turn died.
 
 ## Golden set
 
@@ -81,7 +104,15 @@ Each run:
 5. `eval:report` refreshes the dashboard.
 
 Store the **config hash** (models, modes, prompt versions) with every run so a metric move
-can be attributed to a specific change.
+can be attributed to a specific change. It is computed in
+`packages/orchestrator/src/config.ts` — anything that can change an output belongs in it.
+When you add a knob that moves quality (a decoding param, a VAD threshold, thinking on/off),
+add it to the hash in the same change, or two runs that scored differently will claim to
+have been the same configuration.
+
+The judge is the one place thinking should be **on**: `chat()` defaults to `thinking: false`
+because the voice loop cannot afford it (see `docs/SARVAM_API.md`), but an LLM judge is
+off the hot path and the reasoning is what you're paying for. Pass `thinking: true` there.
 
 ## Online evals (later)
 

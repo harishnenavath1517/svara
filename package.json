@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.33.1",
   "engines": { "node": ">=20" },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": ["@swc/core", "esbuild", "protobufjs", "sharp"]
   },
   "scripts": {
     "dev": "pnpm -r --parallel run dev",

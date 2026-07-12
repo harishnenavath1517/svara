@@ -82,14 +82,61 @@ it here as a permanent regression case — that's how the set earns its keep.
 
 ## Hop activity contract (Temporal)
 
-Each hop activity is pure w.r.t. the workflow: takes typed input, returns typed output,
-emits exactly one trace event as a side effect. Signatures live in `packages/shared`.
+A Temporal activity takes **serializable arguments and returns a serializable result**. It
+cannot be handed a live microphone, and it cannot yield audio back as it produces it. So the
+streams do not cross the activity boundary — only correlation ids and summaries do:
 
 ```
-transcribe(audioStream, opts)  -> { text, lang, isFinal }[]   // streaming
-respond(text, ctx, opts)       -> { tokenStream, ragContextIds }
-synthesize(sentenceStream, opts) -> audioChunkStream
+transcribe({ ctx, lang, mode })      -> { text, lang }
+respond({ ctx, history })            -> { text, lang, ragContextIds }
+synthesize({ ctx, speaker, pace })   -> { chunks, bytes, ttfb_ms }
+endTurn({ ctx })                     -> void      // non-cancellable teardown
 ```
+
+The bytes flow around Temporal, through two channels keyed by `trace_id`:
+
+- **Gateway ↔ worker** — caller audio down, transcripts/tokens/TTS audio up (see below).
+- **The turn bus** (`packages/orchestrator/src/bus.ts`) — an in-worker channel that carries
+  STT → LLM (transcripts) and LLM → TTS (sentences), plus the detected language.
+
+All three activities start **concurrently** and block on the bus. That is what makes the
+pipeline overlap: `synthesize` is already subscribed when sentence 1 closes. A sequential
+`await transcribe(); await respond(); await synthesize()` cannot hit the latency budget.
+
+Each activity emits exactly **one** trace event as a side effect — on success and on failure
+alike, including cancellation (`error: {code: "cancelled", message: "barge-in"}`).
 
 Per-hop timeouts and retry policy are set on the Temporal activity options, not inside the
-activity body.
+activity body. Retryability is per hop, and not arbitrary:
+
+| Hop | Attempts | Why |
+|-----|----------|-----|
+| `transcribe` | 1 | The audio was consumed as it streamed. A second attempt has nothing to hear. |
+| `respond` | 3 | Re-reads the transcript off the bus; its only side effect (the live-transcript frame) is cumulative and overwrites. |
+| `synthesize` | 2, conditionally | Refuses its own retry once the caller has heard audio — a retry would speak the reply twice. |
+
+**Consequence to respect:** the bus lives in one worker process, so a turn's three activities
+must land on the same worker. True today. Before running more than one worker, move the bus
+onto Redis/NATS or pin the turn with a Temporal worker session.
+
+## Internal channel (gateway ↔ worker)
+
+A second WebSocket (`/internal`), dialed by the worker on boot, multiplexed by `trace_id`.
+Localhost, no auth — never expose it. Types: `packages/orchestrator/src/protocol.ts`.
+
+| Direction | Frame | Meaning |
+|-----------|-------|---------|
+| gateway → worker | `audio` | base64 PCM16 mono @16kHz, one VAD-passed mic frame |
+| gateway → worker | `audio_end` | VAD endpointed the utterance. Ends the STT stream, which is what makes Saaras flush and finalize. |
+| gateway → worker | `cancel` | **Barge-in.** Aborts every hop's Sarvam socket in-process, now. |
+| worker → gateway | `partial` / `final` | transcript so far; `final` unblocks the LLM hop |
+| worker → gateway | `token` | the reply *so far* (cumulative, not a delta — so a retried `respond` overwrites rather than doubles) |
+| worker → gateway | `reply` | the complete reply, once the LLM hop is done |
+| worker → gateway | `tts_audio` | base64 PCM16 @24kHz, forwarded straight to the caller |
+
+`cancel` exists because **Temporal cancellation is too slow to carry barge-in**: it reaches
+an activity only in the response to a heartbeat, and heartbeats are throttled to ~80% of
+`heartbeatTimeout`. Measured, that left a cancelled turn's TTS streaming for five more
+seconds — inaudible to the caller but still billing, and still tracing as a clean turn.
+Temporal's own `handle.cancel()` still runs, behind the in-band abort, for the workflow's
+bookkeeping.

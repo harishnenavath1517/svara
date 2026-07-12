@@ -4,3 +4,4 @@ export * from "./hops.js";
 export * from "./languages.js";
 export * from "./secret.js";
 export * from "./trace.js";
+export * from "./wire.js";
