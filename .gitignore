@@ -37,3 +37,10 @@ eval-runs/
 
 # Audio blobs referenced by traces (input_ref/output_ref). Local; not source.
 .svara-storage/
+
+.vercel
+.env*
+
+# tool noise (Neon marketplace skill installer)
+.agents/
+skills-lock.json
